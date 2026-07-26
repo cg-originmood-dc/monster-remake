@@ -1,0 +1,9 @@
+[package]
+name = "petdata"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "魔物觀測者 寵物圖鑑：內建表 + spetdata.ini 讀取"
+
+[dependencies]

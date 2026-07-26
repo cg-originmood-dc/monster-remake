@@ -1,0 +1,7 @@
+# npm 自己管這個檔的格式（每次 install 都會重寫），
+# 讓 prettier 也去縮排它只會製造一份幾千行的假 diff。
+package-lock.json
+
+# 建置產物
+dist/
+wasm-pkg/

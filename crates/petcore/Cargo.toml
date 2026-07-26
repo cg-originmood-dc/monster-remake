@@ -1,0 +1,13 @@
+[package]
+name = "petcore"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "魔物觀測者 remake 的應用層：DTO、圖鑑疊層、指令派送"
+
+[dependencies]
+petcalc = { workspace = true }
+petdata = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

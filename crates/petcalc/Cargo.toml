@@ -1,0 +1,11 @@
+[package]
+name = "petcalc"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "魔物觀測者 檔次計算核心（噬生・魔物觀測者 v3.12 移植版）"
+
+[dependencies]
+
+[dev-dependencies]

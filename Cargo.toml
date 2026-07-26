@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = ["crates/petcalc", "crates/petdata", "crates/petcore", "crates/petweb"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.77"
+# ⚠️ 這裡**刻意不寫 license**，而且不會有 LICENSE 檔。
+#
+# 這個專案內含別人的東西：`src/assets/ui/` 那 26 張圖是從原程式的資源抽出來的，
+# 版權在原作者手上。掛一個開源授權等於代替原作者對外聲明「這些隨便拿」，
+# 那是我們沒有的權利 —— 寧可什麼都不宣告，也不要宣告錯的。
+#
+# 定位是**僅供參考**。詳見 README 的「授權與定位」。
+publish = false
+
+[workspace.dependencies]
+petcalc = { path = "crates/petcalc" }
+petdata = { path = "crates/petdata" }
+petcore = { path = "crates/petcore" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

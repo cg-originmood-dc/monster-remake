@@ -1,0 +1,1429 @@
+/* 噬生・魔物觀測者 remake
+ *
+ * 原程式的介面是 owner-drawn（DFM 裡只有背景圖跟空 TPanel，中文字全烘進點陣圖），
+ * 所以這裡分兩路走 —— 見 CLAUDE.md §4（該節開頭那段）：
+ *
+ *   1. 純圖案、沒有文字要重排的（主視窗外框、直立分頁、加減鈕、放大鏡），
+ *      直接用從原程式資源抽出來的原圖，放在 assets/ui/。
+ *   2. 有文字的（按鈕、欄位、標籤），用 CSS 照原程式實機截圖的取樣色重畫。
+ *
+ * 取樣色：
+ *   面板底  #DECFAD   欄位底  #545243   欄位框  #7FA9A8
+ *   按鈕    #316B73 → #215563（漸層）   按鈕亮邊 #6FA0A5
+ *   標籤字  #46536F   高光    #F4EDD7   邊框    #9C8A5F / #B5A47D
+ *
+ * 面板的五層描邊是從 assets/ui/sidepanel.png 逐像素掃出來的（由外而內）：
+ *   #6B5518 → #FFF7E7 → #EFE7C6 → #C6B28C → #847542 → 面板底
+ * 用 box-shadow 疊出來而不是 border-image，這樣面板高度隨內容變也不會拉壞。
+ */
+
+:root {
+    --paper: #decfad;
+    --paper-hi: #f4edd7;
+    --paper-lo: #cbb98f;
+    --edge: #9c8a5f;
+    --edge-soft: #b5a47d;
+    --ink: #46536f;
+    --ink-dim: #7b8299;
+
+    --field: #545243;
+    --field-hi: #6a6857;
+    --field-edge: #7fa9a8;
+    --field-text: #f2ecd8;
+    --field-ghost: #a9a693;
+
+    --teal: #316b73;
+    --teal-lo: #215563;
+    --teal-hi: #6fa0a5;
+    --teal-on: #58a2ac;
+    --teal-ink: #14343d;
+
+    --bad: #a34b32;
+    --good: #3f7d4e;
+
+    /* 面板描邊，由外而內 */
+    --rim-0: #6b5518;
+    --rim-1: #fff7e7;
+    --rim-2: #efe7c6;
+    --rim-3: #c6b28c;
+    --rim-4: #847542;
+
+    /* 主視窗外框圖是 281×173，內容凹槽在 x20..253 / y27..160。
+     * 寫成百分比，改 --shell-w/h 時內容自己跟著走。
+     * ⚠️ 高度要跟著寬度照 281:173 走（520 → 320），拉成別的比例會把烘在圖上的
+     * 標題與珠子壓扁 —— 原程式自己是等比 Stretch 的（實測縮放率 x1.5019 / y1.5000）。 */
+    /* 側欄寬 ＝ 關起來時 `.deck` 預留的空白，兩處共用這一個值。 */
+    --side-w: 487px;
+
+    --shell-w: 520px;
+    --shell-h: 320px;
+    --shell-l: 7.1174%; /* 20/281 */
+    --shell-t: 15.6069%; /* 27/173 */
+    --shell-r: 9.6085%; /* 27/281 */
+    --shell-b: 6.9364%; /* 12/173 */
+
+    --font: 'Microsoft JhengHei', 'PingFang TC', 'Noto Sans TC', 'Segoe UI', sans-serif;
+    --mono: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    font: 13px/1.5 var(--font);
+    color: var(--ink);
+    background: #2f2a20 radial-gradient(ellipse at 50% 0%, #4a4234 0%, #241f18 70%, #14110d 100%);
+}
+
+#app {
+    min-height: 100%;
+    padding: 18px;
+}
+
+/* 整塊靠頁面左邊，不置中 —— 置中的話側欄一開合，整組就左右滑。 */
+.app {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+}
+
+/* 出處。壓在深色背景上，不搶主視窗的注意力但也不藏起來。 */
+.credit {
+    margin-top: 2px;
+    font-size: 11px;
+    line-height: 1.7;
+    text-align: center;
+    color: #8d8471;
+}
+.credit a {
+    color: #b9ad90;
+}
+.credit a:hover {
+    color: #ded0ad;
+}
+
+.splash {
+    display: grid;
+    place-items: center;
+    min-height: 70vh;
+    color: var(--paper);
+    letter-spacing: 3px;
+}
+.splash.failed {
+    display: block;
+    max-width: 640px;
+    margin: 12vh auto 0;
+    padding: 18px 22px;
+    background: var(--paper);
+    border: 1px solid var(--edge);
+    border-radius: 8px;
+    letter-spacing: 0;
+}
+.splash.failed pre {
+    white-space: pre-wrap;
+    font: 12px/1.6 var(--mono);
+    color: var(--bad);
+}
+.splash code {
+    font-family: var(--mono);
+    background: var(--paper-hi);
+    padding: 1px 5px;
+    border-radius: 3px;
+}
+
+/* ── 主視窗外框 ────────────────────────────────────────────────────────── */
+
+/* 背景就是原程式那張圖，含右緣的捲軸裝飾與烘上去的標題。
+ * 原程式自己也是 TImage.Stretch 拉伸這張圖，所以 100% 100% 是照做不是偷懶。
+ * pixelated 讓放大後保持原本的點陣邊緣 —— GDI 的 StretchBlt 就長這樣。 */
+.shell {
+    position: relative;
+    flex: 0 0 auto;
+    width: var(--shell-w);
+    height: var(--shell-h);
+    background: url(./assets/ui/shell.png) no-repeat 0 0 / 100% 100%;
+    image-rendering: pixelated;
+    filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.5));
+    z-index: 1;
+}
+
+/* 列距不是均分的 —— 量原截圖主視窗的結果是：
+ * 五列固定 20 shell-px 一格，狀態列再隔 28 shell-px，凹槽上下各留一點邊。
+ * 換算到 --shell-h:320px（凹槽高 133/173×320 = 246px）就是下面這組數字：
+ *   上留 13px ─ 五列各 37px ─（撐開）─ 狀態列 ─ 下留 10px
+ * 均分（space-between）會把列距撐到 45px，跟原程式對不上。 */
+.shell-body {
+    position: absolute;
+    inset: var(--shell-t) var(--shell-r) var(--shell-b) var(--shell-l);
+    display: flex;
+    flex-direction: column;
+    padding: 13px 0 10px;
+    image-rendering: auto;
+}
+.shell-body .row {
+    height: 37px;
+    gap: 10px;
+    margin: 0;
+}
+/* 字級也是量出來的（單位是 shell.png 的像素，×520/281 換成 CSS px）：
+ *   板上的標籤／欄名  13 → 21px      凹槽裡的字        10 → 17px
+ *   按鈕上的字         9 → 16px      狀態列             9 → 16px
+ * 原程式的板面字明顯比欄位字大一號，全部設成同一級就沒有那個層次了。
+ * 標籤欄 104px ＝ 原程式主視窗的凹槽起始座標（含左縮排），
+ * 這樣後面那條長凹槽才會從同一個左緣開始。 */
+.shell-body .row-label,
+.shell-body .col-cap,
+.shell-body .field.bare {
+    font-size: 21px;
+}
+.shell-body .row-label {
+    flex: 0 0 104px;
+    padding-left: 7px;
+}
+.shell-body .field {
+    font-size: 17px;
+}
+.shell-body .btn {
+    font-size: 16px;
+}
+/* 狀態列被推到凹槽底部。 */
+.shell-body .status {
+    margin-top: auto;
+    font-size: 16px;
+}
+/* 原程式的運算模式那排是撐滿到凹槽右緣的，不是靠左擠成一小坨。 */
+.shell-body .btn-row {
+    flex: 1;
+}
+.shell-body .btn-row .btn {
+    flex: 1;
+    padding: 2px 0;
+}
+/* 能力倍率那格：原程式量到 45 shell-px 寬（＝凹槽寬的 19%），跟長凹槽是一組的。 */
+.shell-body .field.num.md {
+    flex: 0 0 84px;
+    width: 84px;
+}
+
+/* 標題列右上那兩顆珠子。位置照 shell.png 量的：青綠「−」在 x238..250 / y7..17，
+ * 紅「?」等大、貼在它左邊一格。都寫成百分比，改 --shell-w/h 時自己跟著走。 */
+.shell-orb {
+    position: absolute;
+    top: 4.05%; /* 7/173 */
+    width: 4.27%; /* 12/281 */
+    height: 6.36%; /* 11/173 */
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+}
+
+/* 「−」的圖已經烘在外框上了，這裡只是蓋一塊透明熱區補上點擊。 */
+.shell-orb.min {
+    left: 84.7%; /* 238/281 */
+    background: none;
+}
+.shell-orb.min:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
+
+/* 「?」原程式是執行期畫的，所以要自己畫一顆。紅是從截圖取樣的 #D92A2A。 */
+.shell-orb.help {
+    left: 80.1%; /* 225/281 */
+    font: 700 10px/1 var(--font);
+    color: #fff;
+    background: radial-gradient(circle at 35% 28%, #ff7a6e 0%, #d92a2a 55%, #8e1b1b 100%);
+    box-shadow:
+        0 0 0 1px #efe9d6,
+        0 1px 2px rgba(0, 0, 0, 0.5);
+}
+.shell-orb.help:hover {
+    background: radial-gradient(circle at 35% 28%, #ff9a8e 0%, #e63a3a 55%, #a02222 100%);
+}
+
+/* ── 面板 ──────────────────────────────────────────────────────────────── */
+
+.panel {
+    background: var(--paper);
+    border: 1px solid var(--rim-0);
+    border-radius: 5px;
+    /* 由內而外列，後面的被前面的蓋住 → 剛好疊成原圖那五層描邊 */
+    box-shadow:
+        inset 0 0 0 1px var(--rim-1),
+        inset 0 0 0 2px var(--rim-2),
+        inset 0 0 0 3px var(--rim-3),
+        inset 0 0 0 4px var(--rim-4),
+        0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+/* 標題列要縮在五層描邊裡面，不然 box-shadow 會把它的邊角切掉。 */
+.panel-title {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    margin: 5px 5px 0;
+    padding: 3px 10px;
+    background: linear-gradient(180deg, #efe6c8 0%, var(--paper) 100%);
+    border-bottom: 1px solid var(--edge-soft);
+    font-weight: 700;
+    letter-spacing: 2px;
+    text-shadow: 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+.panel-icons {
+    position: absolute;
+    right: 2px;
+    display: flex;
+    gap: 4px;
+}
+.tiny-icon {
+    width: 17px;
+    height: 17px;
+    padding: 0;
+    line-height: 15px;
+    font: 700 11px var(--font);
+    color: #fff;
+    text-shadow: 0 1px 0 var(--teal-ink);
+    background: radial-gradient(
+        circle at 35% 28%,
+        var(--teal-hi) 0%,
+        var(--teal) 55%,
+        var(--teal-lo) 100%
+    );
+    border: 1px solid var(--teal-ink);
+    border-radius: 50%;
+    cursor: pointer;
+}
+.tiny-icon:hover {
+    background: var(--teal-on);
+}
+
+.panel-body {
+    padding: 9px 11px;
+}
+
+/* 原程式的側欄是固定大小的表單，
+ * 所以這裡也給一個底高 —— 內容少的分頁若縮起來，直立分頁就會從下面露出來，
+ * 三根長短不一，看起來像是排版壞了。 */
+/* 側欄的尺寸是量原截圖來的（米色框，同一張裡跟主視窗一起量才有可比性）：
+ *   分析 362x206 ／ 擴展 404x229 ／ 主視窗一律 ~400x244
+ * 也就是側欄 ≈ 主視窗寬的 90%（分析）到 100%（擴展），高度是主視窗的 84%~104%。
+ * 主視窗的米色框在這裡是 487x296，所以分析取 440x248，擴展那頁再放寬。
+ * 內容都靠上、底下留一大片空白 —— 原程式就是這樣（固定尺寸的表單）。 */
+/* ⚠️ 三個分頁**同寬**（`--side-w` ＝ 原程式最寬的「擴展」那頁）。原程式量到的是
+ * 分析 362 ／ 擴展 404 —— 桌面上寬度不同無所謂（視窗往左長，右緣不動），
+ * 但網頁上寬度一變就會把主視窗推走。寧可讓「分析」多留 47px 空白。
+ * 這個寬度同時是 `.deck` 關起來時預留的 padding，兩邊必須是同一個值。 */
+.side-panel {
+    width: var(--side-w);
+    min-height: 248px;
+    max-width: 100%;
+    align-self: flex-start;
+    /* 要蓋在直立分頁上面（分頁是被壓住一半的），所以吃一個層級 */
+    position: relative;
+    z-index: 1;
+}
+/* 「擴展」是原程式的寬版表單（比分析那頁大一號）—— 欄位多，
+ * 檔次／隨機檔各要塞五格，用窄版會擠成兩行。 */
+.side-panel.wide {
+    min-height: 290px;
+}
+
+/* 側欄跟主視窗是同一個放大率，字級也要同一套，不然兩塊擺在一起會像兩個程式。
+ * 只是側欄那幾列（尤其擴展頁的兩個下拉）比主視窗擠，所以整體降一級：
+ * 標籤 18px、欄位／按鈕 15px。 */
+.side-panel .row-label {
+    flex: 0 0 76px;
+    font-size: 18px;
+}
+.side-panel .field,
+.side-panel .btn,
+.side-panel .col-cap {
+    font-size: 15px;
+}
+
+/* 一排的順序是 [直立分頁][側欄][主視窗]：側欄往**左**開，分頁貼在最左緣。
+ *
+ * `safe center` 是必要的 —— 純 center 在內容擠不下時會把左半邊推成負座標，
+ * 那一塊是捲不回來的（Chromium 的老問題）。WebView2 是 Chromium，支援 safe。 */
+/* 側欄是往**左**開的，所以左邊那塊空白要**預先留著**：關起來時用 padding 佔位，
+ * 展開時 padding 收掉、面板長進去。兩種狀態下主視窗的 x 完全一樣（實測 509），
+ * 分頁則跟著面板走 —— 原程式就是這樣，視窗往左長、右緣不動。
+ *
+ * 不預留的話（或整組置中）主視窗會被推來推去，開合一次整個版面滑一次。 */
+.deck {
+    display: flex;
+    align-items: flex-start;
+    justify-content: flex-start;
+    max-width: 100%;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    padding-left: var(--side-w);
+}
+.deck.with-panel {
+    padding-left: 0;
+}
+.side-slot {
+    display: flex;
+}
+
+/* ── 直立分頁 ──────────────────────────────────────────────────────────── */
+
+/* 原圖 21×46（分/析 兩個字直排烘在裡面），照主視窗的放大率放到 38×84。
+ * 負的 margin-right 把它塞到右邊那塊底下 —— 原程式就是只露出左邊一小條。 */
+.side-tabs {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    flex: 0 0 auto;
+    margin-top: 45px;
+    margin-right: -12px;
+}
+.side-tabs.with-panel {
+    margin-top: 12px;
+}
+.side-tab {
+    width: 34px;
+    height: 75px;
+    padding: 0;
+    border: none;
+    background: no-repeat center / 100% 100%;
+    image-rendering: pixelated;
+    cursor: pointer;
+    filter: drop-shadow(-2px 2px 3px rgba(0, 0, 0, 0.4));
+}
+.side-tab.tab-analyze {
+    background-image: url(./assets/ui/tab-analyze-up.png);
+}
+.side-tab.tab-expand {
+    background-image: url(./assets/ui/tab-expand-up.png);
+}
+.side-tab.tab-simulate {
+    background-image: url(./assets/ui/tab-simulate-up.png);
+}
+.side-tab.tab-analyze:hover {
+    background-image: url(./assets/ui/tab-analyze-hot.png);
+}
+.side-tab.tab-expand:hover {
+    background-image: url(./assets/ui/tab-expand-hot.png);
+}
+.side-tab.tab-simulate:hover {
+    background-image: url(./assets/ui/tab-simulate-hot.png);
+}
+.side-tab.tab-analyze.on {
+    background-image: url(./assets/ui/tab-analyze-down.png);
+}
+.side-tab.tab-expand.on {
+    background-image: url(./assets/ui/tab-expand-down.png);
+}
+.side-tab.tab-simulate.on {
+    background-image: url(./assets/ui/tab-simulate-down.png);
+}
+
+/* ── 列 ────────────────────────────────────────────────────────────────── */
+
+.row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 4px 0;
+}
+.row-label {
+    flex: 0 0 60px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    /* 原程式的標籤字是深藍帶一圈淺色描邊，襯在米色板子上 */
+    text-shadow: 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+.row-body {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex: 1;
+    min-width: 0;
+    flex-wrap: wrap;
+}
+.spacer {
+    flex: 1;
+}
+.col-cap {
+    font-weight: 700;
+    letter-spacing: 1px;
+    white-space: nowrap;
+}
+.dash {
+    color: var(--ink-dim);
+}
+
+/* ── 欄位 ──────────────────────────────────────────────────────────────── */
+
+.field {
+    padding: 2px 7px;
+    font: 13px var(--font);
+    color: var(--field-text);
+    background: linear-gradient(180deg, var(--field) 0%, var(--field-hi) 100%);
+    border: 1px solid var(--field-edge);
+    border-radius: 5px;
+    outline: none;
+    min-width: 0;
+}
+.field::placeholder {
+    color: var(--field-ghost);
+}
+.field:focus {
+    border-color: var(--teal-on);
+    box-shadow: 0 0 0 1px var(--teal-on);
+}
+.field:disabled {
+    opacity: 0.45;
+}
+.field.bad {
+    border-color: var(--bad);
+}
+.field.wide {
+    flex: 1;
+    min-width: 60px;
+}
+
+/* 「寵物名字」在原程式裡不是輸入框，是直接畫在板子上的一行字（原程式截圖裡那一列
+ * 完全沒有凹槽）—— 但重製版這格要能打字搜寵物，所以平常長得像標籤，
+ * 滑過去或聚焦才把凹槽亮出來。看起來是原本的樣子，用起來還是輸入框。 */
+.field.bare {
+    color: var(--ink);
+    background: none;
+    border-color: transparent;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-shadow: 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+.field.bare::placeholder {
+    color: var(--ink);
+    opacity: 1;
+}
+.field.bare:hover,
+.field.bare:focus {
+    color: var(--field-text);
+    background: linear-gradient(180deg, var(--field) 0%, var(--field-hi) 100%);
+    border-color: var(--field-edge);
+    text-shadow: none;
+}
+.field.bare:hover::placeholder,
+.field.bare:focus::placeholder {
+    color: var(--field-ghost);
+}
+.field.grow {
+    flex: 1;
+}
+.field.num {
+    text-align: center;
+    font-family: var(--mono);
+}
+.field.num.sm {
+    width: 40px;
+}
+.field.num.md {
+    width: 54px;
+}
+/* 下拉選單。箭頭用原程式那顆藍鈕（caret-*.png，15×15）——
+ * 貼的是原尺寸不放大，所以不必也不能加 pixelated（那會把選單文字一起弄糊）。 */
+.field.pick {
+    appearance: none;
+    color: var(--ink);
+    background:
+        url(./assets/ui/caret-up.png) no-repeat right 2px center / 15px 15px,
+        linear-gradient(180deg, #fff 0%, var(--paper-hi) 100%);
+    border-color: var(--edge);
+    padding: 2px 21px 2px 6px;
+}
+.field.pick:hover {
+    background-image:
+        url(./assets/ui/caret-hot.png), linear-gradient(180deg, #fff 0%, var(--paper-hi) 100%);
+}
+/* 選到非預設值時描一圈青綠 —— 「暴點」預設是「下次」（不換軸），
+ * 一旦換掉就等於多了一條會改變成長表的條件，得看得出來它是開著的。 */
+.field.pick.on {
+    border-color: var(--teal-on);
+    box-shadow: inset 0 0 0 1px var(--teal-on);
+}
+
+/* ── 按鈕 ──────────────────────────────────────────────────────────────── */
+
+/* 原程式的按鈕：青綠圓角、白字**四周描一圈深色**、外面再一圈淺色亮邊。
+ * 那圈描邊是遊戲字體的招牌，少了就不像了 —— 對照原程式的按鈕截圖即可確認。 */
+.btn {
+    padding: 2px 9px;
+    font: 700 13px var(--font);
+    color: #fff;
+    text-shadow:
+        1px 0 0 var(--teal-ink),
+        -1px 0 0 var(--teal-ink),
+        0 1px 0 var(--teal-ink),
+        0 -1px 0 var(--teal-ink);
+    background: linear-gradient(180deg, var(--teal) 0%, var(--teal-lo) 100%);
+    border: 1px solid var(--teal-ink);
+    border-radius: 5px;
+    box-shadow:
+        inset 0 0 0 1px var(--teal-hi),
+        0 1px 2px rgba(0, 0, 0, 0.35);
+    cursor: pointer;
+    white-space: nowrap;
+}
+.btn:hover:not(:disabled) {
+    background: linear-gradient(180deg, var(--teal-on) 0%, var(--teal) 100%);
+}
+.btn:active:not(:disabled) {
+    background: linear-gradient(180deg, var(--teal-lo) 0%, var(--teal) 100%);
+    box-shadow:
+        inset 0 0 0 1px var(--teal-hi),
+        inset 0 2px 3px rgba(0, 0, 0, 0.4);
+}
+.btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+/* 選中態：往內凹，跟原程式的「智」一樣 */
+.btn.active {
+    background: linear-gradient(180deg, #17414d 0%, var(--teal-lo) 100%);
+    box-shadow:
+        inset 0 0 0 1px var(--teal-on),
+        inset 0 2px 4px rgba(0, 0, 0, 0.55);
+}
+.btn.wide {
+    width: 100%;
+}
+
+.btn-row {
+    display: flex;
+    gap: 3px;
+    flex-wrap: wrap;
+}
+.btn-row .btn {
+    padding: 2px 7px;
+}
+
+/* [−][+] 小方鈕 —— 綠減／金加，直接用原圖（12×11，放到 19×17）。 */
+.stepper {
+    display: inline-flex;
+    gap: 3px;
+}
+.step {
+    width: 19px;
+    height: 17px;
+    padding: 0;
+    border: none;
+    background: no-repeat center / 100% 100%;
+    image-rendering: pixelated;
+    cursor: pointer;
+}
+.step.minus {
+    background-image: url(./assets/ui/step-minus-up.png);
+}
+.step.plus {
+    background-image: url(./assets/ui/step-plus-up.png);
+}
+.step.minus:hover {
+    background-image: url(./assets/ui/step-minus-hot.png);
+}
+.step.plus:hover {
+    background-image: url(./assets/ui/step-plus-hot.png);
+}
+.step.minus:active {
+    background-image: url(./assets/ui/step-minus-down.png);
+}
+.step.plus:active {
+    background-image: url(./assets/ui/step-plus-down.png);
+}
+
+.spin {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+/* ── 五軸方格 ──────────────────────────────────────────────────────────── */
+
+.axis-fields {
+    display: inline-flex;
+    flex-direction: column;
+    gap: 1px;
+}
+.axis-boxes {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+}
+
+/* 主視窗那一版：原程式的「最高檔次」是一條長凹槽，所以五格併進同一個框，
+ * 軸名改掛 tooltip（多一排字會把那一列撐高，跟原本的版面就對不上了）。 */
+.axis-fields.trough {
+    flex: 1;
+    min-width: 0;
+}
+.axis-fields.trough .axis-boxes {
+    gap: 0;
+    padding: 1px;
+    background: linear-gradient(180deg, var(--field) 0%, var(--field-hi) 100%);
+    border: 1px solid var(--field-edge);
+    border-radius: 5px;
+}
+/* 凹槽裡**不畫分隔線** —— 原程式那條就是一整條乾淨的深色槽，
+ * 五個數字只是槽裡的文字。畫了格線會變成「五個小輸入框」，一眼就跟原圖不一樣。 */
+.axis-fields.trough .field.num {
+    flex: 1;
+    width: auto;
+    min-width: 0;
+    background: none;
+    border: none;
+    border-radius: 0;
+}
+.axis-fields.trough .field.num:focus {
+    box-shadow: none;
+    background: rgba(255, 255, 255, 0.12);
+}
+.axis-names {
+    display: flex;
+    gap: 3px;
+    font-size: 10px;
+    color: var(--ink-dim);
+}
+.axis-names span {
+    width: 40px;
+    text-align: center;
+}
+.rest {
+    font-size: 11px;
+    color: var(--ink-dim);
+    white-space: nowrap;
+}
+.rest.bad {
+    color: var(--bad);
+    font-weight: 700;
+}
+
+/* ── 主視窗零碎 ────────────────────────────────────────────────────────── */
+
+/* 「寵物資料」旁邊那支放大鏡 —— 原圖 13×21，鏡片在上、握把在下。 */
+.lens {
+    width: 16px;
+    height: 26px;
+    padding: 0;
+    border: none;
+    background: url(./assets/ui/lens.png) no-repeat center / 100% 100%;
+    image-rendering: pixelated;
+    cursor: pointer;
+    flex: 0 0 auto;
+    /* 握把比那一列高，讓它像原程式一樣稍微往下探出去 */
+    margin-bottom: -6px;
+}
+.lens:hover {
+    filter: brightness(1.2);
+}
+
+.parse-note {
+    font-size: 11px;
+    white-space: nowrap;
+}
+.parse-note.ok {
+    color: var(--good);
+}
+.parse-note.bad {
+    color: var(--bad);
+}
+
+/* 原程式的狀態列就是板子上一行置中的字，沒有分隔線也沒有底色。 */
+.status {
+    padding: 0 6px;
+    text-align: center;
+    font-size: 12px;
+    min-height: 18px;
+    text-shadow: 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+.hint {
+    margin: 4px 0 0;
+    font-size: 11px;
+    color: var(--ink-dim);
+    line-height: 1.45;
+}
+.hint.wild {
+    border-top: 1px dashed var(--edge-soft);
+    padding-top: 5px;
+}
+/* 「搜尋範圍」的警語 —— 原程式那句「如果你不知道自己在做什麼…」。
+   用左邊條而不是整塊紅底：它是提醒，不是錯誤。 */
+.hint.warn {
+    margin: 5px 0 2px;
+    padding: 4px 7px;
+    border-left: 3px solid var(--bad);
+    background: rgba(163, 75, 50, 0.08);
+    color: var(--ink);
+}
+.coef {
+    font: 11px var(--mono);
+    color: var(--ink-dim);
+}
+
+/* ── 自動完成 ──────────────────────────────────────────────────────────── */
+
+.petpicker {
+    position: relative;
+    flex: 1;
+    display: flex;
+    min-width: 120px;
+}
+.suggest {
+    position: absolute;
+    top: calc(100% + 2px);
+    left: 0;
+    right: 0;
+    z-index: 30;
+    max-height: 230px;
+    overflow: auto;
+    margin: 0;
+    padding: 2px;
+    list-style: none;
+    background: var(--paper-hi);
+    border: 1px solid var(--edge);
+    border-radius: 5px;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+}
+.suggest-item {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 12px;
+}
+.suggest-item.on {
+    background: var(--teal);
+    color: #fff;
+}
+.s-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.s-grow {
+    font: 11px var(--mono);
+    opacity: 0.75;
+}
+.s-race {
+    font-size: 10px;
+    opacity: 0.6;
+}
+
+/* ── 能力條 ────────────────────────────────────────────────────────────── */
+
+.stat-strip {
+    display: flex;
+    gap: 4px;
+    padding: 5px 8px;
+    background: var(--paper);
+    border: 1px solid var(--edge);
+    border-radius: 6px;
+}
+.stat-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 56px;
+    padding: 2px 6px;
+    background: linear-gradient(180deg, var(--field) 0%, var(--field-hi) 100%);
+    border: 1px solid var(--field-edge);
+    border-radius: 4px;
+}
+.stat-cell .s-k {
+    font-size: 10px;
+    color: var(--field-ghost);
+}
+.stat-cell .s-v {
+    font: 700 14px var(--mono);
+    color: var(--field-text);
+}
+.stat-cell.bp .s-v {
+    color: #d8c98a;
+}
+
+/* ── 結果 ──────────────────────────────────────────────────────────────── */
+
+/* 原程式的結果是另一個表單（client 422×413），比主視窗寬一點點而已 ——
+ * 攤成整個視窗寬的話，邊際機率那幾條會孤零零地縮在左邊。
+ * 422 × (主視窗 520/281 的放大率) ≈ 780，取整到 800。 */
+.result-panel {
+    width: min(800px, 96vw);
+}
+.result-head {
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+}
+.chip {
+    padding: 1px 8px;
+    background: var(--paper-hi);
+    border: 1px solid var(--edge-soft);
+    border-radius: 9px;
+    font-size: 11px;
+}
+.chip.warn {
+    background: #f0dcb4;
+    border-color: #c09a4d;
+}
+.chip.good {
+    background: #d8ebd6;
+    border-color: var(--good);
+    color: var(--good);
+}
+.empty {
+    padding: 14px;
+    text-align: center;
+    color: var(--ink-dim);
+    line-height: 1.7;
+}
+
+.table-wrap {
+    max-height: 46vh;
+    overflow: auto;
+    border: 1px solid var(--edge-soft);
+    border-radius: 5px;
+}
+table.grid {
+    width: 100%;
+    border-collapse: collapse;
+    font: 12px var(--mono);
+}
+table.grid th,
+table.grid td {
+    padding: 1px 5px;
+    text-align: center;
+    border-right: 1px solid rgba(156, 138, 95, 0.3);
+}
+table.grid thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: linear-gradient(180deg, var(--teal-hi) 0%, var(--teal) 100%);
+    color: #fff;
+    font-family: var(--font);
+    font-weight: 700;
+    border-bottom: 1px solid var(--teal-lo);
+}
+table.grid thead tr.sub th {
+    top: 21px;
+    background: linear-gradient(180deg, var(--teal) 0%, var(--teal-lo) 100%);
+    font-size: 11px;
+}
+table.grid tbody tr:nth-child(odd) {
+    background: #f4edd7;
+}
+table.grid tbody tr:nth-child(even) {
+    background: #e7dcbc;
+}
+table.grid tbody tr:hover {
+    background: #cfe1de;
+}
+table.grid tr.approx td {
+    font-style: italic;
+    color: #6b5f3f;
+}
+table.grid td.pct {
+    font-weight: 700;
+    text-align: right;
+    padding-right: 8px;
+}
+table.grid td.zero {
+    color: #b7ac8c;
+}
+table.grid td.lost {
+    color: var(--bad);
+    font-weight: 700;
+}
+
+/* 邊際機率 —— **這是原程式的推算輸出**，所以擺在最上面當主角。
+   掉檔那張一軸一列只佔得到一半寬，排成兩欄右邊才不會留一大塊空白；
+   隨機檔有 11 格，塞不進半欄，所以 `.wide` 把它拉回單欄。 */
+.marginals {
+    margin-bottom: 8px;
+}
+.marg-block {
+    margin-bottom: 8px;
+}
+.marg-block h4 {
+    margin: 0 0 3px;
+    font-size: 12px;
+    letter-spacing: 1px;
+}
+.marg-rows {
+    column-count: 2;
+    column-gap: 24px;
+}
+.marg-rows.wide {
+    column-count: 1;
+}
+.marg-rows.wide .marg-cell {
+    width: 22px;
+}
+.marg-rows.wide .marg-cell i {
+    width: 13px;
+}
+.marg-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 4px;
+    margin-bottom: 2px;
+    break-inside: avoid;
+}
+.marg-axis {
+    flex: 0 0 34px;
+    font-size: 11px;
+}
+.marg-cell {
+    display: flex;
+    flex-direction: column-reverse;
+    align-items: center;
+    width: 26px;
+}
+.marg-cell b {
+    font: 10px var(--mono);
+    color: var(--ink-dim);
+}
+.marg-cell i {
+    display: block;
+    width: 16px;
+    background: linear-gradient(180deg, var(--teal-hi), var(--teal));
+    border-radius: 2px 2px 0 0;
+}
+.marg-cell.sure i {
+    background: linear-gradient(180deg, #7fae86, var(--good));
+}
+.marg-cell.nil i {
+    background: #c9be93;
+}
+.marg-note {
+    font-size: 11px;
+    color: var(--good);
+    margin-left: 4px;
+}
+
+/* 五軸全確定：原程式連明細都不顯示，這裡收成一行結論。 */
+.solved {
+    margin-bottom: 8px;
+}
+.solved h4 {
+    margin: 0 0 4px;
+    font-size: 12px;
+    letter-spacing: 1px;
+}
+.solved-rows {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.solved-cell {
+    display: flex;
+    align-items: baseline;
+    gap: 5px;
+    padding: 3px 9px;
+    background: #d8ebd6;
+    border: 1px solid var(--good);
+    border-radius: 3px;
+}
+.solved-cell .s-k {
+    font-size: 11px;
+    color: var(--ink-dim);
+}
+.solved-cell .s-v {
+    font: 12px var(--mono);
+    color: var(--good);
+    font-weight: 700;
+}
+.solved-cell .s-r {
+    font: 10px var(--mono);
+    color: var(--ink-dim);
+}
+
+/* 候選明細 —— 原程式沒有這一塊，所以收進 details 當附錄。 */
+.detail-block {
+    margin-top: 8px;
+    border-top: 1px dashed var(--edge-soft);
+    padding-top: 6px;
+}
+.detail-block > summary {
+    cursor: pointer;
+    font-size: 12px;
+    letter-spacing: 1px;
+    user-select: none;
+}
+.detail-block > summary:hover {
+    color: var(--teal);
+}
+.detail-block .sub-note {
+    margin-left: 6px;
+    font-size: 10px;
+    letter-spacing: 0;
+    color: var(--ink-dim);
+}
+.detail-block .table-wrap {
+    margin-top: 6px;
+}
+
+/* 機率查詢 */
+.prob {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--edge-soft);
+}
+.prob h4 {
+    margin: 0 0 4px;
+    font-size: 12px;
+    letter-spacing: 1px;
+}
+.prob-out {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+}
+.prob-cell {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 2px 9px;
+    background: var(--paper-hi);
+    border: 1px solid var(--edge-soft);
+    border-radius: 4px;
+}
+.prob-cell .p-k {
+    font-size: 11px;
+    color: var(--ink-dim);
+}
+.prob-cell .p-v {
+    font: 700 14px var(--mono);
+    color: var(--ink);
+}
+.prob-cell.sure {
+    border-color: var(--good);
+}
+.prob-cell.sure .p-v {
+    color: var(--good);
+}
+.prob-cell.nil .p-v {
+    color: var(--ink-dim);
+}
+.prob-note {
+    font-size: 11px;
+    color: var(--ink-dim);
+}
+.bad-note {
+    color: var(--bad);
+}
+
+/* ── 寵物資料視窗 ──────────────────────────────────────────────────────── */
+
+.backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: grid;
+    place-items: center;
+    background: rgba(0, 0, 0, 0.55);
+}
+/* 這個視窗跟側欄同一個放大率（欄位／按鈕 15px、標籤 18px），理由跟 `.side-panel`
+ * 那條一樣：主視窗是照 shell.png 放大過的，旁邊擺一塊 1× 的板子會像兩個程式。
+ * 不跟**主視窗**同級（21px）是因為這裡密得多 —— 清單一列要塞名字＋五格檔次＋總和。 */
+.window {
+    width: min(880px, 94vw);
+}
+.window .field,
+.window .btn {
+    font-size: 15px;
+}
+.window .panel-title {
+    font-size: 18px;
+}
+.window .hint,
+.window .parse-note,
+.window .note {
+    font-size: 13px;
+}
+.window .tiny-icon {
+    width: 21px;
+    height: 21px;
+    line-height: 19px;
+    font-size: 13px;
+}
+.cat-source,
+.cat-search {
+    display: flex;
+    gap: 5px;
+    margin-bottom: 6px;
+}
+/* 來源字串是後端組的（內建 ＋ 線上），可能很長 —— 讓它縮，按鈕不能被擠掉 */
+.cat-src-label {
+    flex: 1;
+    min-width: 0;
+    align-self: center;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    font-size: 12px;
+    color: var(--ink-dim);
+}
+.cat-src-label b {
+    margin-left: 6px;
+    color: var(--ink);
+}
+.cat-grid {
+    display: grid;
+    grid-template-columns: 108px 1fr 200px;
+    gap: 6px;
+    height: 380px;
+}
+/* 能力搜尋沒有種族分頁，條件列又佔掉上面一截 —— 少一欄、矮一點 */
+.cat-grid.narrow {
+    grid-template-columns: 1fr 220px;
+    height: 300px;
+}
+
+.finder {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+/* 條件列的欄位比編輯表單密（七格能力擠一排），標籤欄再窄一點才放得下 */
+.finder .pf-row > span:first-child {
+    width: auto;
+}
+.finder .pf-axes {
+    flex: 1;
+}
+.finder .pf-axes .field.num.sm {
+    width: 48px;
+}
+.cat-races {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    overflow: auto;
+}
+.race {
+    display: flex;
+    justify-content: space-between;
+    padding: 3px 7px;
+    font: 14px var(--font);
+    color: var(--ink);
+    background: linear-gradient(180deg, #efe6c8 0%, var(--paper) 100%);
+    border: 1px solid var(--edge-soft);
+    border-radius: 4px;
+    cursor: pointer;
+}
+.race b {
+    font: 12px var(--mono);
+    color: var(--ink-dim);
+}
+.race:hover:not(:disabled) {
+    background: var(--paper-hi);
+}
+.race.on {
+    background: linear-gradient(180deg, var(--teal-hi) 0%, var(--teal) 100%);
+    color: #fff;
+}
+.race.on b {
+    color: #cfe6e8;
+}
+.race:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.cat-list {
+    overflow: auto;
+    padding: 2px;
+    background: var(--paper-hi);
+    border: 1px solid var(--edge-soft);
+    border-radius: 4px;
+}
+.cat-item {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 3px 7px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 14px;
+}
+.cat-item:hover {
+    background: #e2d6ae;
+}
+.cat-item.on {
+    background: var(--teal);
+    color: #fff;
+}
+.c-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.c-grow {
+    font: 13px var(--mono);
+    opacity: 0.75;
+}
+.c-sum {
+    font: 700 13px var(--mono);
+    min-width: 28px;
+    text-align: right;
+}
+
+.cat-detail {
+    padding: 6px 8px;
+    background: var(--paper-hi);
+    border: 1px solid var(--edge-soft);
+    border-radius: 4px;
+    overflow: auto;
+}
+.cat-detail h4 {
+    margin: 0 0 6px;
+    font-size: 16px;
+}
+.cat-detail dl {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 1px 8px;
+    margin: 0 0 6px;
+    font-size: 14px;
+}
+.cat-detail dt {
+    color: var(--ink-dim);
+}
+.cat-detail dd {
+    margin: 0;
+    font-family: var(--mono);
+}
+.grow-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+    margin-bottom: 6px;
+}
+.grow-list span {
+    padding: 1px 5px;
+    background: var(--paper);
+    border: 1px solid var(--edge-soft);
+    border-radius: 3px;
+    font: 13px var(--mono);
+}
+.grow-list b {
+    color: var(--ink-dim);
+    margin-right: 3px;
+    font-weight: 400;
+}
+.grow-list.elem span {
+    background: #e4ecdf;
+}
+
+/* 自製寵物的星號 —— 清單上一眼看出哪些是自己加的（＝哪些刪得掉）。 */
+.mine {
+    margin-left: 4px;
+    color: #b8862b;
+    font-size: 13px;
+}
+.cat-item.on .mine {
+    color: #ffe9a8;
+}
+
+.cat-actions {
+    display: flex;
+    gap: 5px;
+    margin-top: 5px;
+}
+.cat-actions .btn {
+    flex: 1;
+}
+
+/* ── 寵物編輯表單（原程式的編輯面板）──────────────────────────────────────
+ *
+ * 欄位順序照原程式的編輯截圖：魔物名字 → 檔次 → 能力倍率 → 地水火風 → 種族／技能。
+ * 原程式那裡沒有編號欄位，這裡也不放 —— 見 catalog.js 的 PetForm。 */
+
+.pet-form {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    min-height: 380px;
+}
+.pf-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 14px;
+}
+.pf-row > span:first-child {
+    width: 68px;
+    flex: none;
+    color: var(--ink-dim);
+}
+.pf-axes {
+    display: flex;
+    align-items: flex-end;
+    gap: 4px;
+}
+/* 欄位在上、軸名在下，跟側欄的 AxisFields 同一個排法 */
+.pf-axes label {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1px;
+}
+.pf-axes label span {
+    font-size: 12px;
+    color: var(--ink-dim);
+}
+.hint.inline {
+    margin: 0;
+}
+
+.pf-error {
+    margin: 0;
+    padding: 5px 8px;
+    background: #f3e2dc;
+    border: 1px solid var(--bad);
+    border-radius: 4px;
+    color: var(--bad);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.pf-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: auto;
+}
+.pf-actions .btn {
+    min-width: 76px;
+}
+
+/* 按下去會動到檔案的按鈕上色：保存是綠的、刪除是紅的。
+ * 其餘一律維持原程式的青綠 —— 整片都上色就等於沒上色。 */
+.btn.tone-go:not(:disabled) {
+    background: linear-gradient(180deg, #5a9a68 0%, var(--good) 100%);
+}
+.btn.tone-go:hover:not(:disabled) {
+    background: linear-gradient(180deg, #6cae7a 0%, #4a8a59 100%);
+}
+.btn.tone-danger:not(:disabled) {
+    background: linear-gradient(180deg, #b85c40 0%, var(--bad) 100%);
+}
+.btn.tone-danger:hover:not(:disabled) {
+    background: linear-gradient(180deg, #c96f52 0%, #92422b 100%);
+}

@@ -1,0 +1,7 @@
+<!-- 觀測 —— 主視窗「寵物資料」那顆放大鏡。配色取自 style.css 的 :root：
+     羊皮紙 --paper、外框 --rim-0、鏡身 --teal。 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+    <rect x="1" y="1" width="30" height="30" rx="5" fill="#decfad" stroke="#6b5518" stroke-width="2" />
+    <circle cx="14" cy="14" r="6.5" fill="#f4edd7" stroke="#316b73" stroke-width="3" />
+    <path d="M18.9 18.9 L25 25" stroke="#316b73" stroke-width="3.5" stroke-linecap="round" />
+</svg>

@@ -1,0 +1,20 @@
+{
+    "name": "monster-observer-remake",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev": "npm run build:wasm && vite",
+        "build": "npm run build:wasm && vite build",
+        "build:wasm": "wasm-pack build crates/petweb --target web --out-dir ../../wasm-pkg --no-pack",
+        "preview": "vite preview",
+        "test": "cargo test --workspace"
+    },
+    "dependencies": {
+        "htm": "^3.1.1",
+        "preact": "^10.29.7"
+    },
+    "devDependencies": {
+        "vite": "^5.4.10"
+    }
+}

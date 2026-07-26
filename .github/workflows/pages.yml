@@ -1,0 +1,62 @@
+# 建置網頁版並發佈到 GitHub Pages。
+#
+# **沒有轉檔步驟。** 圖鑑是使用者的瀏覽器跑起來之後直接抓上游那份 CSV 的
+# （CLAUDE.md §2.1），所以圖鑑更新不需要重新部署，`dist/` 裡也沒有圖鑑資料。
+
+name: Pages
+
+on:
+    push:
+        branches: [main]
+    workflow_dispatch:
+
+permissions:
+    contents: read
+    pages: write
+    id-token: write
+
+# 同時只跑一份部署；排隊中的舊 run 直接讓位給新的
+concurrency:
+    group: pages
+    cancel-in-progress: true
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: dtolnay/rust-toolchain@stable
+              with:
+                  targets: wasm32-unknown-unknown
+
+            - uses: Swatinem/rust-cache@v2
+
+            # 公式一動就會被抓出來 —— 部署前一定要先綠
+            - name: cargo test
+              run: cargo test --workspace
+
+            - uses: jetli/wasm-pack-action@v0.4.0
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 20
+                  cache: npm
+
+            - run: npm ci
+            - run: npm run build
+
+            - uses: actions/configure-pages@v5
+            - uses: actions/upload-pages-artifact@v3
+              with:
+                  path: dist
+
+    deploy:
+        needs: build
+        runs-on: ubuntu-latest
+        environment:
+            name: github-pages
+            url: ${{ steps.deployment.outputs.page_url }}
+        steps:
+            - id: deployment
+              uses: actions/deploy-pages@v4
