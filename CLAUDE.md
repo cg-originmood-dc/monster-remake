@@ -624,6 +624,37 @@ w(r) = 10! / (r₀! r₁! r₂! r₃! r₄!)
 
 **沒有轉檔步驟了。** 圖鑑是開網頁時從上游抓的，不進版控也不進 `dist/`。
 
+### 5.2 ⚠️ 動到 `package-lock.json` 時要用 npm ≥ 11
+
+**這台開發機上的 `npm` 是 8.5.1**（`node` 倒是 v22），而 npm 8 有
+[npm/cli#4828](https://github.com/npm/cli/issues/4828)：產 lockfile 時
+**只記錄當下這台機器的平台**的 optional dependency。
+
+結果是 —— 在 Windows 上重產 lockfile，裡面就只有
+`@rollup/rollup-win32-*`，**沒有 `@rollup/rollup-linux-x64-gnu`**。
+本機 `npm run build` 照跑，CI 的 `npm ci` 在 Linux 上就炸：
+
+```
+Error: Cannot find module @rollup/rollup-linux-x64-gnu
+```
+
+而且它**不會在 `cargo test` 那關被擋下來** —— 測試全綠、wasm 也建好了，
+死在最後 `vite build` 那一步。第一次部署就是這樣掛的。
+
+所以要重產 lockfile 一律走：
+
+```bash
+rm package-lock.json && npx --yes npm@11 install --package-lock-only
+```
+
+驗收方式是數 `@rollup` 的平台套件，**要有 25 筆**（含 `linux-x64-gnu`）：
+
+```bash
+grep -c '"node_modules/@rollup/rollup-' package-lock.json
+```
+
+只有 2 筆就是被 npm 8 產壞了，重來。
+
 ---
 
 ## 6. 移植進度
