@@ -82,8 +82,10 @@ export function App({ boot }) {
 
     const set = useCallback((patch) => setS((prev) => ({ ...prev, ...patch })), []);
 
-    const parsed = useMemo(() => parseStats(s.statText), [s.statText]);
+    // 帶圖鑑進去，這格才認得出 `幽紫妖靈 99 133 32 38 36` 開頭的寵物名（見 `parse.js`）。
+    const parsed = useMemo(() => parseStats(s.statText, catalog.pets), [s.statText, catalog.pets]);
     // 「入手能力」跟「當前能力」用同一個寬鬆解析器 —— 使用者兩格都是用貼的。
+    // **那格不帶圖鑑**：入手能力講的是同一隻寵物的另一個時間點，寫名字沒有意義。
     const parsedCatch = useMemo(() => parseStats(s.catchStatText), [s.catchStatText]);
     const growDto = useMemo(() => toGrowDto(s.grow, s.bprate100), [s.grow, s.bprate100]);
     const simGrowDto = useMemo(() => toGrowDto(s.simGrow, s.bprate100), [s.simGrow, s.bprate100]);
@@ -105,6 +107,19 @@ export function App({ boot }) {
         });
         setStatus(`${p.name}　${p.race_name}　檔次 ${p.grow.join(' ')}`);
     };
+
+    // 「當前能力」貼進一整串 `幽紫妖靈 99 133 32 38 36` 時，順手把寵物與等級一起帶進來
+    // —— 這樣使用者不必再去圖鑑裡點一次、也不必自己填檔次。
+    //
+    // 相依只掛 `parsed.pet` 與 `parsed.lvl`（不是整個 `parsed`）是刻意的：套用完之後
+    // 再手動改檔次或等級，接著回頭修那串數字，這裡不會醒過來把手改的蓋掉。
+    useEffect(() => {
+        if (!parsed.pet) return;
+        pickPet(parsed.pet);
+        // 省略等級 ＝ 1（機器人那條指令就是這個意思），**不是**「沿用現在這格」——
+        // 沿用的話，上一次查 60 級留下來的數字會悄悄套到這次的查詢上。
+        set({ lvl: parsed.lvl != null ? clamp(parsed.lvl, 1, 255) : 1 });
+    }, [parsed.pet, parsed.lvl]);
 
     const runGuess = async () => {
         if (!parsed.ok) {
@@ -275,7 +290,13 @@ export function App({ boot }) {
                             class="field wide ${s.statText && !parsed.ok ? 'bad' : ''}"
                             value=${s.statText}
                             placeholder="格式:血魔攻防敏(精神回復)"
-                            title=${s.statText ? `認出 ${parsed.matched} 項` : ''}
+                            ${/* 提示只放在 title 裡 —— 凹槽裡那句是原程式的字，不改。 */ ''}
+                            title=${
+                                s.statText
+                                    ? `認出 ${parsed.matched} 項` +
+                                      (parsed.pet ? `　寵物:${parsed.pet.name}` : '')
+                                    : '也可以整串貼「寵物名 等級(可省略) 血 魔 攻 防 敏」'
+                            }
                             onInput=${(e) => set({ statText: e.currentTarget.value })}
                         />
                         ${
