@@ -209,3 +209,98 @@ fn the_bot_s_unsolvable_case_stays_unsolvable() {
     let resp = run(&c);
     assert_eq!(resp["total"], json!(0), "機器人說無解，我們卻推出東西來了");
 }
+
+/// **總**掉檔範圍，用同一批實測案例對一次。
+///
+/// 期望值不是抄來的常數 —— 是把 `candidates` 裡每一筆的 `lost_bp` 自己掃一遍算出來的，
+/// 拿它跟 `distribution.lost_total_range`（走加權統計那條路）比。兩條路算的是同一件事，
+/// 對得起來才表示統計那邊沒有把軸與軸之間的相關性弄丟。
+///
+/// 只挑筆數 ≤ 200 的案例：`candidates` 有 200 筆上限（`truncated`），
+/// 超過的話掃出來的就不是全集，這個對照本身會失效。
+#[test]
+fn the_total_loss_range_agrees_with_scanning_every_candidate() {
+    let cases = [
+        Case {
+            name: "小白鴨",
+            grow: [40, 45, 10, 20, 10],
+            lvl: 1,
+            stat: [118, 70, 47, 29, 30],
+        },
+        Case {
+            name: "小白鴨",
+            grow: [40, 45, 10, 20, 10],
+            lvl: 17,
+            stat: [481, 291, 182, 71, 68],
+        },
+        Case {
+            name: "寶寶炸彈",
+            grow: [18, 40, 10, 48, 9],
+            lvl: 17,
+            stat: [400, 315, 170, 76, 116],
+        },
+        Case {
+            name: "衝浪小黃鴨",
+            grow: [28, 46, 23, 20, 8],
+            lvl: 1,
+            stat: [114, 77, 50, 40, 31],
+        },
+    ];
+
+    for c in &cases {
+        let resp = run(c);
+        assert_eq!(
+            resp["truncated"],
+            json!(false),
+            "{} 的候選被截斷了，這個對照不能用",
+            c.name
+        );
+
+        let losses: Vec<i64> = resp["candidates"]
+            .as_array()
+            .expect("沒有候選")
+            .iter()
+            .map(|r| r["lost_bp"].as_i64().expect("候選沒有 lost_bp"))
+            .collect();
+        let scanned = json!([
+            losses.iter().min().expect("一筆都沒有"),
+            losses.iter().max().unwrap()
+        ]);
+
+        assert_eq!(
+            resp["distribution"]["lost_total_range"], scanned,
+            "{} lv{} 的總掉檔範圍，加權統計跟逐筆掃出來的不一樣",
+            c.name, c.lvl
+        );
+    }
+}
+
+/// ⭐ 真實資料上，總掉檔範圍**確實推不出來** —— 這就是統計那邊要多存一份的理由。
+///
+/// 逐軸邊際只說得出「這一軸可能掉幾檔」，各軸最小值的和只是總和的**下界**，
+/// 未必真的有哪一組候選同時取到那些值。這裡拿實測案例把差距釘住。
+#[test]
+fn the_per_axis_bound_is_looser_than_the_real_total() {
+    let c = Case {
+        name: "衝浪小黃鴨",
+        grow: [28, 46, 23, 20, 8],
+        lvl: 1,
+        stat: [114, 77, 50, 40, 31],
+    };
+    let resp = run(&c);
+
+    let per_axis = loss_range(&resp);
+    let naive: [i32; 2] = [
+        per_axis.iter().map(|r| r[0]).sum(),
+        per_axis.iter().map(|r| r[1]).sum(),
+    ];
+    let real = &resp["distribution"]["lost_total_range"];
+
+    assert!(
+        real[0].as_i64().unwrap() > naive[0] as i64,
+        "逐軸下界 {} 居然就是真正的最小總掉檔 {} —— \
+         換一個真的推不出來的案例來測，不然這條測試沒有在測東西",
+        naive[0],
+        real[0]
+    );
+}

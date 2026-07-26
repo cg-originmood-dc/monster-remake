@@ -683,6 +683,15 @@ pub struct DistributionDto {
     pub lost_marginal: Vec<Vec<f64>>,
     /// `[軸][隨機檔 0..=10]` 的邊際機率。
     pub random_marginal: Vec<Vec<f64>>,
+    /// `[總掉檔量 0..=20]` 的機率。
+    ///
+    /// **不能由 `lost_marginal` 推出來** —— 逐軸邊際丟掉了軸之間的相關性，
+    /// 各軸最小值的和只是下界，未必真的湊得出來。見 `petcalc::stats`。
+    pub lost_total_marginal: Vec<f64>,
+    /// 總掉檔量的可能範圍 `[最小, 最大]`，沒有候選時是 `null`。
+    ///
+    /// 對全集統計，**不受 `candidates` 那 200 筆上限影響**。
+    pub lost_total_range: Option<[i32; 2]>,
     /// 已經唯一確定的軸（機率 ≈100% 那一格），未確定的是 `null`。
     pub determined_lost: Vec<Option<i32>>,
     pub fully_determined: bool,
@@ -695,6 +704,8 @@ impl From<&Distribution> for DistributionDto {
             max_percent: d.max_percent,
             lost_marginal: d.lost_marginal.iter().map(|r| r.to_vec()).collect(),
             random_marginal: d.random_marginal.iter().map(|r| r.to_vec()).collect(),
+            lost_total_marginal: d.lost_total_marginal.to_vec(),
+            lost_total_range: d.lost_total_range().map(|(lo, hi)| [lo, hi]),
             determined_lost: d.determined_lost().to_vec(),
             fully_determined: d.is_fully_determined(),
         }

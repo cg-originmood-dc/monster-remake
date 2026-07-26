@@ -45,6 +45,7 @@ export const GuessResults = ({ resp, constants }) => {
                 <span class="chip">共 ${resp.total} 組解</span>
                 <span class="chip">可配點數 ${resp.point}</span>
                 <span class="chip">比對 ${modeName(resp.mode)}</span>
+                ${d?.lost_total_range && html`<span class="chip">總掉檔 ${rangeText(d.lost_total_range)}</span>`}
                 ${d?.fully_determined && html`<span class="chip good">唯一解</span>`}
             </div>
 
@@ -61,7 +62,7 @@ export const GuessResults = ({ resp, constants }) => {
                             <tr>
                                 <th class="pct">機率</th>
                                 <th colspan="5">檔次</th>
-                                <th colspan="5">掉檔</th>
+                                <th colspan="6">掉檔</th>
                                 <th colspan="5">加點</th>
                                 <th colspan="5">隨機檔</th>
                             </tr>
@@ -69,6 +70,7 @@ export const GuessResults = ({ resp, constants }) => {
                                 <th></th>
                                 ${AXIS.map((a) => html`<th key=${'g' + a}>${a}</th>`)}
                                 ${AXIS.map((a) => html`<th key=${'l' + a}>${a}</th>`)}
+                                <th class="tot" title="這一組的總掉檔數">總</th>
                                 ${AXIS.map((a) => html`<th key=${'m' + a}>${a}</th>`)}
                                 ${AXIS.map((a) => html`<th key=${'r' + a}>${a}</th>`)}
                             </tr>
@@ -90,6 +92,9 @@ export const GuessResults = ({ resp, constants }) => {
                                                     ${v || '·'}
                                                 </td>`,
                                         )}
+                                        <td class="tot ${c.lost_bp ? 'lost' : 'zero'}">
+                                            ${c.lost_bp || '·'}
+                                        </td>
                                         ${c.manual.map(
                                             (v, j) =>
                                                 html`<td key=${'m' + j} class=${v ? '' : 'zero'}>
@@ -167,6 +172,8 @@ const Marginals = ({ d, constants }) => {
         />
     `;
 
+    const totalBlock = html`<${TotalLost} d=${d} sure=${sure} constants=${constants} />`;
+
     if (d.fully_determined) {
         const allRandom = sureRandom.every((n) => n >= 0);
         return html`
@@ -186,6 +193,13 @@ const Marginals = ({ d, constants }) => {
                                 </span>
                             `,
                         )}
+                        ${
+                            d.lost_total_range &&
+                            html`<span class="solved-cell total">
+                                <span class="s-k">總掉檔</span>
+                                <span class="s-v">${rangeText(d.lost_total_range)}</span>
+                            </span>`
+                        }
                     </div>
                     <p class="hint">
                         五軸的掉檔量都只有一種可能${allRandom ? '，隨機檔也是' : ''} ——
@@ -199,6 +213,7 @@ const Marginals = ({ d, constants }) => {
 
     return html`
         <div class="marginals">
+            ${totalBlock}
             <${MargBlock}
                 title="掉檔機率"
                 rows=${d.lost_marginal}
@@ -209,6 +224,63 @@ const Marginals = ({ d, constants }) => {
                     d.determined_lost[axis] != null ? `確定掉 ${d.determined_lost[axis]} 檔` : ''}
             />
             ${randomBlock}
+        </div>
+    `;
+};
+
+/** `[lo, hi]` → `「3」` 或 `「2–7」`。 */
+const rangeText = ([lo, hi]) => (lo === hi ? `${lo}` : `${lo}–${hi}`);
+
+/**
+ * 總掉檔的分布 —— 「這隻總共掉了幾檔」。
+ *
+ * ⚠️ **這個數字只能由引擎給**，前端算不出來，理由有兩層：
+ *
+ * 1. 掃 `candidates` 不行 —— 那個欄位有 200 筆上限（`truncated`），
+ *    尾巴上的解看不到。
+ * 2. 由 `lost_marginal` 逐軸推也不行 —— 逐軸邊際丟掉了軸之間的相關性，
+ *    各軸最小值的和只是下界，未必真的有哪一組候選同時取到那些值。
+ *    （`stats.rs::per_axis_marginals_cannot_recover_the_total_range` 釘住這件事。）
+ *
+ * 所以走 `distribution.lost_total_marginal`，那是對**全集**加權統計的。
+ * 只畫有機率的那一段 —— 21 格裡通常只有三五格不是零。
+ */
+const TotalLost = ({ d, sure, constants }) => {
+    const range = d.lost_total_range;
+    if (!range) return null;
+    const [lo, hi] = range;
+    const slots = [];
+    for (let n = lo; n <= hi; n++) slots.push(n);
+    const peak = Math.max(...slots.map((n) => d.lost_total_marginal[n]), 1);
+
+    return html`
+        <div class="marg-block">
+            <h4>
+                總掉檔
+                <span class="sub-note">
+                    ${lo === hi ? `一定是 ${lo} 檔` : `${lo} 到 ${hi} 檔都有可能`}
+                </span>
+            </h4>
+            <div class="marg-rows">
+                <div class="marg-row">
+                    <span class="marg-axis">合計</span>
+                    ${slots.map((n) => {
+                        const p = d.lost_total_marginal[n];
+                        return html`
+                            <span
+                                key=${n}
+                                class="marg-cell ${sure(p) ? 'sure' : ''} ${
+                                    p < constants.percent_epsilon ? 'nil' : ''
+                                }"
+                                title="總共掉 ${n} 檔：${p.toFixed(2)}%"
+                            >
+                                <b>${n}</b>
+                                <i style=${`height:${Math.max(1, (p / peak) * 28)}px`}></i>
+                            </span>
+                        `;
+                    })}
+                </div>
+            </div>
         </div>
     `;
 };

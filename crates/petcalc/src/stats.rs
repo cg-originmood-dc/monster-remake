@@ -103,7 +103,17 @@ pub struct Distribution {
     pub lost_marginal: [[f64; MAX_LOST_PER_AXIS as usize + 1]; AXES],
     /// 每軸隨機檔 `0..=10` 的邊際機率（百分比）。
     pub random_marginal: [[f64; RANDOM_POOL as usize + 1]; AXES],
+    /// **總**掉檔量 `0..=20` 的機率（百分比）。
+    ///
+    /// ⚠️ **這個不能由 [`lost_marginal`](Self::lost_marginal) 推出來。**
+    /// 逐軸邊際丟掉了軸與軸之間的相關性：各軸最小值的和只是總和的下界，
+    /// 未必真的有哪一組候選同時取到那些值。要問「總共掉了幾檔」就得在
+    /// 掃候選時另外累一份，所以它在這裡。
+    pub lost_total_marginal: [f64; TOTAL_LOST_SLOTS],
 }
+
+/// 總掉檔量的格數：五軸各最多掉 [`MAX_LOST_PER_AXIS`] 檔，再加上「掉 0 檔」那格。
+pub const TOTAL_LOST_SLOTS: usize = AXES * MAX_LOST_PER_AXIS as usize + 1;
 
 impl Distribution {
     /// 統計一批候選解。`catalog` 是圖鑑檔次，用來還原逐軸掉檔量。
@@ -123,10 +133,12 @@ impl Distribution {
 
         let mut lost_marginal = [[0.0f64; MAX_LOST_PER_AXIS as usize + 1]; AXES];
         let mut random_marginal = [[0.0f64; RANDOM_POOL as usize + 1]; AXES];
+        let mut lost_total_marginal = [0.0f64; TOTAL_LOST_SLOTS];
         let cat = catalog.to_array();
 
         for (c, &p) in candidates.iter().zip(&percent) {
             let grow = c.grow.to_array();
+            let mut lost_sum = 0;
             for axis in 0..AXES {
                 let lost = cat[axis] - grow[axis];
                 // 掉超過 4 檔理論上不會發生，但推算允許指定 target_grow，
@@ -134,10 +146,16 @@ impl Distribution {
                 if (0..=MAX_LOST_PER_AXIS).contains(&lost) {
                     lost_marginal[axis][lost as usize] += p;
                 }
+                lost_sum += lost;
                 let r = c.random[axis];
                 if (0..=RANDOM_POOL).contains(&r) {
                     random_marginal[axis][r as usize] += p;
                 }
+            }
+            // 逐軸那圈越界時是「跳過那一格」，總和這裡也一樣 ——
+            // 只要有任何一軸越界，這一筆的總和就不進統計，不要記一個半真的數字。
+            if (0..TOTAL_LOST_SLOTS as i32).contains(&lost_sum) {
+                lost_total_marginal[lost_sum as usize] += p;
             }
         }
 
@@ -148,7 +166,23 @@ impl Distribution {
             max_percent,
             lost_marginal,
             random_marginal,
+            lost_total_marginal,
         }
+    }
+
+    /// 總掉檔量的可能範圍 `(最小, 最大)`，沒有任何候選時是 `None`。
+    ///
+    /// 「可能」的判準跟 [`determined_lost`](Self::determined_lost) 一致：權重不為零
+    /// 就算數。用它而不是掃 `candidates` —— 那個在應用層會被截成 200 筆。
+    pub fn lost_total_range(&self) -> Option<(i32, i32)> {
+        let hit: Vec<i32> = self
+            .lost_total_marginal
+            .iter()
+            .enumerate()
+            .filter(|(_, &p)| p > 0.0)
+            .map(|(i, _)| i as i32)
+            .collect();
+        Some((*hit.first()?, *hit.last()?))
     }
 
     /// 機率最高的那些候選的索引（可能並列）。
@@ -333,6 +367,25 @@ mod tests {
         (catalog, out.candidates)
     }
 
+    /// 手工造一筆候選。統計只看 `grow` 與 `random`，其餘欄位照定義補齊就好
+    /// —— 這裡不需要它真的解得出來，只需要它形狀對。
+    fn fake_candidate(catalog: GrowRange, grow: GrowRange) -> Candidate {
+        let random = [2, 2, 2, 2, 2];
+        let bp = grow.calc_bp_at_level(1, None).base_bp;
+        let cat = catalog.to_array();
+        let g = grow.to_array();
+        Candidate {
+            grow,
+            manual: [0; AXES],
+            random,
+            bp,
+            stat: bp.calc_real_num(),
+            lost_bp: (0..AXES).map(|i| cat[i] - g[i]).sum(),
+            possible_lost: std::array::from_fn(|i| [cat[i] - g[i], cat[i] - g[i]]),
+            approximate: false,
+        }
+    }
+
     #[test]
     fn percentages_sum_to_one_hundred() {
         let (catalog, cands) = sample();
@@ -354,6 +407,76 @@ mod tests {
             assert!((lost - 100.0).abs() < 1e-9, "軸 {axis} 掉檔邊際 = {lost}");
             assert!((rand - 100.0).abs() < 1e-9, "軸 {axis} 隨機檔邊際 = {rand}");
         }
+        let total: f64 = d.lost_total_marginal.iter().sum();
+        assert!((total - 100.0).abs() < 1e-9, "總掉檔邊際 = {total}");
+    }
+
+    /// 總掉檔的統計必須跟逐筆算出來的一致。
+    #[test]
+    fn the_total_loss_marginal_agrees_with_summing_each_candidate() {
+        let (catalog, cands) = sample();
+        let d = Distribution::summarize(catalog, &cands);
+        let cat = catalog.to_array();
+
+        let mut expect = [0.0f64; TOTAL_LOST_SLOTS];
+        for (c, &p) in cands.iter().zip(&d.percent) {
+            let grow = c.grow.to_array();
+            let sum: i32 = (0..AXES).map(|i| cat[i] - grow[i]).sum();
+            expect[sum as usize] += p;
+        }
+        for n in 0..TOTAL_LOST_SLOTS {
+            assert!(
+                (d.lost_total_marginal[n] - expect[n]).abs() < 1e-9,
+                "總掉檔 {n}：{} != {}",
+                d.lost_total_marginal[n],
+                expect[n]
+            );
+        }
+
+        // 範圍也要跟逐筆掃出來的一樣
+        let sums: Vec<i32> = cands
+            .iter()
+            .map(|c| {
+                let g = c.grow.to_array();
+                (0..AXES).map(|i| cat[i] - g[i]).sum()
+            })
+            .collect();
+        assert_eq!(
+            d.lost_total_range(),
+            Some((
+                *sums.iter().min().unwrap(),
+                *sums.iter().max().unwrap()
+            ))
+        );
+    }
+
+    /// ⭐ **總掉檔範圍推不出來** —— 這條就是 `lost_total_marginal` 存在的理由。
+    ///
+    /// 兩組候選：一組只有第 0 軸掉 2 檔，另一組只有第 1 軸掉 2 檔。
+    /// 逐軸邊際看起來每軸都「可能掉 0」，加起來的下界是 0；
+    /// 但實際上沒有任何一組候選是一檔都沒掉的，真正的最小總掉檔是 2。
+    #[test]
+    fn per_axis_marginals_cannot_recover_the_total_range() {
+        let catalog = GrowRange::new(30, 25, 18, 20, 22, DEFAULT_BPRATE);
+        let cands = vec![
+            fake_candidate(catalog, GrowRange::new(28, 25, 18, 20, 22, DEFAULT_BPRATE)),
+            fake_candidate(catalog, GrowRange::new(30, 23, 18, 20, 22, DEFAULT_BPRATE)),
+        ];
+        let d = Distribution::summarize(catalog, &cands);
+
+        // 逐軸邊際：每一軸都有「掉 0 檔」的機率 → 各軸最小值的和 = 0
+        let naive: i32 = (0..AXES)
+            .map(|axis| {
+                d.lost_marginal[axis]
+                    .iter()
+                    .position(|&p| p > 0.0)
+                    .unwrap() as i32
+            })
+            .sum();
+        assert_eq!(naive, 0, "各軸最小值的和應該是 0");
+
+        // 但真正的總掉檔一定是 2 —— 下界 0 根本湊不出來
+        assert_eq!(d.lost_total_range(), Some((2, 2)));
     }
 
     #[test]

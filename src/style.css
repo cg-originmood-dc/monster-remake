@@ -1013,6 +1013,27 @@ table.grid td.lost {
     color: var(--good);
     margin-left: 4px;
 }
+.marg-block h4 .sub-note {
+    margin-left: 6px;
+    font-size: 10px;
+    font-weight: 400;
+    letter-spacing: 0;
+    color: var(--ink-dim);
+}
+
+/* 候選明細裡的「總掉檔」欄：跟逐軸那五格分開一點，免得看成第六軸。 */
+.grid th.tot,
+.grid td.tot {
+    border-left: 1px solid var(--edge-soft);
+    font-weight: 700;
+}
+.solved-cell.total {
+    background: var(--paper-hi);
+    border-color: var(--edge-soft);
+}
+.solved-cell.total .s-v {
+    color: var(--ink);
+}
 
 /* 五軸全確定：原程式連明細都不顯示，這裡收成一行結論。 */
 .solved {
