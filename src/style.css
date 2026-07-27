@@ -849,8 +849,41 @@ body {
     font: 700 14px var(--mono);
     color: var(--field-text);
 }
-.stat-cell.bp .s-v {
+/* 逐軸 BP —— 遊戲的「寵物狀態」視窗顯示的就是這五個數，所以這排是拿來對帳的。
+ * 刻意做得比上面那排能力值矮、窄、暗：它是佐證，不是答案。 */
+.bp-strip {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 4px;
+    padding: 3px 8px;
+    background: var(--paper);
+    border: 1px solid var(--edge);
+    border-radius: 6px;
+}
+.bp-k {
+    font-size: 10px;
+    letter-spacing: 1px;
+    color: var(--ink-dim);
+}
+.bp-cell {
+    padding: 1px 6px;
+    font: 700 12px var(--mono);
     color: #d8c98a;
+    background: linear-gradient(180deg, var(--field) 0%, var(--field-hi) 100%);
+    border: 1px solid var(--field-edge);
+    border-radius: 4px;
+}
+.bp-cell em {
+    margin-right: 3px;
+    font: 10px var(--font);
+    color: var(--field-ghost);
+}
+.bp-cell.sum {
+    color: var(--field-text);
+}
+.bp-strip .btn {
+    margin-left: auto;
 }
 
 /* ── 結果 ──────────────────────────────────────────────────────────────── */

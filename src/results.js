@@ -1,23 +1,27 @@
 // 推算結果與成長表的呈現。
 //
-// ## ⚠️ 原程式**不列候選解**
+// ## ⚠️ 原程式**不列候選解**（但它列掉檔組合）
 //
 // 這裡本來把候選解表格擺在最上面當主角，還在檔頭寫「原程式是把結果吐進一個
 // TMemo，這裡改成表格，資訊一樣」—— **那句話是錯的**，原程式根本沒有那個 TMemo
-// （唯一那個在「模擬」視窗上，跟推算無關）。它的推算輸出只有兩樣東西：
+// （唯一那個在「模擬」視窗上，跟推算無關）。
 //
-// 1. **逐軸邊際分布** —— 每軸「掉了幾檔」「隨機檔是多少」的加權機率。
+// 但接著改寫成「它的推算輸出只有兩樣東西」**又矯枉過正了**（使用者拿截圖打臉的
+// 就是這句）。實際上是三樣：
+//
+// 1. **穩掉 ＋ 逐軸邊際分布** —— 每軸「至少掉幾檔」與「掉了幾檔」的加權機率。
 //    某軸有一格 ≈100% 就是那一軸已確定；五軸全確定就連明細都不顯示。
-// 2. **過濾後的機率總和** —— 見 `probability.js`，那是原程式的機率查詢。
+// 2. **掉檔組合** —— 相異的掉檔 5 元組 ＋ 各自的機率，這是原版「比較直觀」的來源。
+// 3. **過濾後的機率總和** —— 見 `probability.js`，那是原程式的機率查詢。
 //
-// 逐一列出「第 37 組解是這樣」從來不是它的作法：那是 cg-pet-calc 的輸出形狀，
+// 它**沒有**的是「第 37 組解的加點與隨機檔長這樣」：那是 cg-pet-calc 的輸出形狀，
 // 被我照搬進來了。所以版面照原程式翻回來 ——
-// **邊際分布是答案，候選明細收進 `<details>` 當附錄。**
+// **穩掉／組合／邊際是答案，候選明細收進 `<details>` 當附錄。**
 //
 // 明細沒有整個拿掉，是因為它真的有用（想看某一組完整的加點就得靠它），
 // 而且它有 200 筆上限、原程式沒有這個概念 —— 標成附錄比假裝它是主角誠實。
 
-import { html, Panel } from './ui.js';
+import { html, Panel, Btn } from './ui.js';
 import { ProbabilityQuery } from './probability.js';
 
 const AXIS = ['體', '力', '防', '敏', '魔'];
@@ -452,11 +456,22 @@ export const SeriesTable = ({ rows, constants }) => {
     `;
 };
 
-/** 主視窗底下那排即時算出來的能力值。 */
+/**
+ * 主視窗底下那排即時算出來的能力值 ＋ 逐軸 BP。
+ *
+ * ⭐ **逐軸 BP 那排是後補的。** 先前只印 `總BP`，而總和是**對不回遊戲的** ——
+ * 遊戲的「寵物狀態」視窗顯示的正是這五個數（`體力 8.4 力量 9.4 …`），
+ * 原程式的「擴展」頁也有這一排。少了它，使用者要驗算就得自己拆總和。
+ *
+ * 小數位取 1 是照遊戲的顯示（原程式那排印的是整數）—— 這格的用途就是拿去跟
+ * 遊戲對，跟得比較緊的那個才有用。能力值本身仍然是 `fix()` 取整後的整數，
+ * 那條是公式，沒有動。
+ */
 export const StatStrip = ({ row, constants }) => {
     if (!row) return null;
     const s = row.stat;
     const vals = [s.hp, s.mp, s.atk, s.def, s.agi, s.wis, s.res];
+    const bp = row.bp.map((v) => v.toFixed(1));
     return html`
         <div class="stat-strip">
             ${constants.stat_names.map(
@@ -467,10 +482,25 @@ export const StatStrip = ({ row, constants }) => {
                     </span>
                 `,
             )}
-            <span class="stat-cell bp">
-                <span class="s-k">總BP</span>
-                <span class="s-v">${row.bp_sum.toFixed(2)}</span>
+        </div>
+        <div class="bp-strip">
+            <span class="bp-k">BP</span>
+            ${bp.map(
+                (v, i) => html`
+                    <span class="bp-cell" key=${i}>
+                        <em>${AXIS[i]}</em>
+                        ${v}
+                    </span>
+                `,
+            )}
+            <span class="bp-cell sum">
+                <em>總</em>
+                ${row.bp_sum.toFixed(2)}
             </span>
+            <${Btn} title="複製這五個數（空白分隔）" onClick=${() => copy(bp.join(' '))}>複製<//>
         </div>
     `;
 };
+
+/** 剪貼簿在 http 或舊瀏覽器上沒有，失敗就安靜放過 —— 這顆按鈕不值得跳錯誤。 */
+const copy = (text) => navigator.clipboard?.writeText(text).catch(() => {});
