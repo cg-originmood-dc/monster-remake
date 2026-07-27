@@ -695,6 +695,27 @@ pub struct DistributionDto {
     /// 已經唯一確定的軸（機率 ≈100% 那一格），未確定的是 `null`。
     pub determined_lost: Vec<Option<i32>>,
     pub fully_determined: bool,
+    /// ⭐ **穩掉** —— 每軸「一定至少掉了幾檔」。原程式主視窗結果欄第一行就印它
+    /// （`穩掉：2體 4防 3魔`，掉 0 檔的不列）。
+    ///
+    /// 比 `determined_lost` 寬：那個只認「整條只剩一格」的軸，
+    /// 所以某軸可能掉 2 或 3 檔時它什麼都不說，但「至少 2 檔」是確定的。
+    pub guaranteed_lost: Vec<i32>,
+    /// 相異的掉檔組合與各自的機率總和，照總掉檔遞增排序。
+    ///
+    /// **對全集統計，不受 `candidates` 那 200 筆上限影響。**
+    /// 也**不能由 `lost_marginal` 推出來** —— 逐軸邊際沒有保留軸之間的搭配。
+    pub lost_combos: Vec<LostComboDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LostComboDto {
+    /// 逐軸掉檔量 `[HP, ATK, DEF, AGI, MP]`，正數。
+    pub lost: [i32; AXES],
+    /// 這一組的總掉檔量。
+    pub total: i32,
+    /// 這一組的機率總和（百分點）。全部加起來是 100。
+    pub percent: f64,
 }
 
 impl From<&Distribution> for DistributionDto {
@@ -708,6 +729,16 @@ impl From<&Distribution> for DistributionDto {
             lost_total_range: d.lost_total_range().map(|(lo, hi)| [lo, hi]),
             determined_lost: d.determined_lost().to_vec(),
             fully_determined: d.is_fully_determined(),
+            guaranteed_lost: d.guaranteed_lost().to_vec(),
+            lost_combos: d
+                .lost_combos
+                .iter()
+                .map(|c| LostComboDto {
+                    lost: c.lost,
+                    total: c.total,
+                    percent: c.percent,
+                })
+                .collect(),
         }
     }
 }

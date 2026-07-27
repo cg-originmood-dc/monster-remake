@@ -44,6 +44,7 @@
 use crate::bp::AXES;
 use crate::grow::{GrowRange, MAX_LOST_PER_AXIS, RANDOM_POOL};
 use crate::guess::Candidate;
+use std::collections::BTreeMap;
 
 /// 百分比比較的門檻。原程式內嵌的浮點常數，值為 0.01 個百分點。
 pub const PERCENT_EPSILON: f64 = 0.01;
@@ -110,6 +111,30 @@ pub struct Distribution {
     /// 未必真的有哪一組候選同時取到那些值。要問「總共掉了幾檔」就得在
     /// 掃候選時另外累一份，所以它在這裡。
     pub lost_total_marginal: [f64; TOTAL_LOST_SLOTS],
+    /// 相異的**掉檔 5 元組**與各自的機率總和（百分比），已排序、已去重。
+    ///
+    /// 原程式候選記錄的前五個欄位存的就是 `−lost[i]`，最後一個欄位存權重百分比；
+    /// 主視窗的結果欄把它們一列一列印出來（`13檔 −2 −2 −4 −4 −3 28.45%`）。
+    /// 這裡把**掉檔相同**的候選收成一列、權重相加 —— 71 組解會收成 3 列，
+    /// 那正是使用者說原版「比較直觀」的地方。
+    ///
+    /// ⚠️ 跟 [`lost_total_marginal`](Self::lost_total_marginal) 一樣，
+    /// 這個**推不出來** —— 逐軸邊際沒有保留軸與軸之間的搭配。
+    pub lost_combos: Vec<LostCombo>,
+}
+
+/// 一種掉檔組合，以及所有落在這個組合上的候選的機率總和。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LostCombo {
+    /// 逐軸掉檔量 `[HP, ATK, DEF, AGI, MP]`，**正數**。
+    ///
+    /// 原程式存的是負值（`−lost`）並照那樣顯示；這裡存正值，
+    /// 要不要在畫面上加負號是顯示層的事。
+    pub lost: [i32; AXES],
+    /// 這一組的總掉檔量 ＝ `lost` 的和。
+    pub total: i32,
+    /// 落在這一組的候選的機率總和（百分點）。全部組別加起來是 100。
+    pub percent: f64,
 }
 
 /// 總掉檔量的格數：五軸各最多掉 [`MAX_LOST_PER_AXIS`] 檔，再加上「掉 0 檔」那格。
@@ -134,11 +159,14 @@ impl Distribution {
         let mut lost_marginal = [[0.0f64; MAX_LOST_PER_AXIS as usize + 1]; AXES];
         let mut random_marginal = [[0.0f64; RANDOM_POOL as usize + 1]; AXES];
         let mut lost_total_marginal = [0.0f64; TOTAL_LOST_SLOTS];
+        // 掉檔組合 → 機率總和。相異組合最多 5^5 = 3125 種，實務上遠少於此。
+        let mut combos: BTreeMap<[i32; AXES], f64> = BTreeMap::new();
         let cat = catalog.to_array();
 
         for (c, &p) in candidates.iter().zip(&percent) {
             let grow = c.grow.to_array();
             let mut lost_sum = 0;
+            let mut lost_tuple = [0i32; AXES];
             for axis in 0..AXES {
                 let lost = cat[axis] - grow[axis];
                 // 掉超過 4 檔理論上不會發生，但推算允許指定 target_grow，
@@ -147,6 +175,7 @@ impl Distribution {
                     lost_marginal[axis][lost as usize] += p;
                 }
                 lost_sum += lost;
+                lost_tuple[axis] = lost;
                 let r = c.random[axis];
                 if (0..=RANDOM_POOL).contains(&r) {
                     random_marginal[axis][r as usize] += p;
@@ -156,8 +185,21 @@ impl Distribution {
             // 只要有任何一軸越界，這一筆的總和就不進統計，不要記一個半真的數字。
             if (0..TOTAL_LOST_SLOTS as i32).contains(&lost_sum) {
                 lost_total_marginal[lost_sum as usize] += p;
+                *combos.entry(lost_tuple).or_insert(0.0) += p;
             }
         }
+
+        // `BTreeMap` 已經照元組字典序排好，再穩定排一次把總掉檔少的提前
+        // —— 原程式的結果欄就是 `13檔` 在 `14檔` 上面。
+        let mut lost_combos: Vec<LostCombo> = combos
+            .into_iter()
+            .map(|(lost, percent)| LostCombo {
+                lost,
+                total: lost.iter().sum(),
+                percent,
+            })
+            .collect();
+        lost_combos.sort_by_key(|c| c.total);
 
         let max_percent = percent.iter().copied().fold(0.0, f64::max);
         Self {
@@ -167,7 +209,25 @@ impl Distribution {
             lost_marginal,
             random_marginal,
             lost_total_marginal,
+            lost_combos,
         }
+    }
+
+    /// ⭐ **穩掉** —— 每一軸「一定至少掉了幾檔」，也就是逐軸的最小掉檔量。
+    ///
+    /// 原程式主視窗結果欄第一行就印這個：`穩掉：2體 4防 3魔`
+    /// （掉 0 檔的軸不列）。它比 [`determined_lost`](Self::determined_lost) 寬 ——
+    /// 那個只認「整條只剩一格」的軸，所以體力長條在 2/3/4 三格上時它什麼都不說，
+    /// 但「至少掉 2 檔」明明是確定的。使用者回報的正是這個落差。
+    ///
+    /// 沒有任何候選時全部回 0。
+    pub fn guaranteed_lost(&self) -> [i32; AXES] {
+        std::array::from_fn(|axis| {
+            self.lost_marginal[axis]
+                .iter()
+                .position(|&p| p > 0.0)
+                .unwrap_or(0) as i32
+        })
     }
 
     /// 總掉檔量的可能範圍 `(最小, 最大)`，沒有任何候選時是 `None`。
@@ -477,6 +537,78 @@ mod tests {
 
         // 但真正的總掉檔一定是 2 —— 下界 0 根本湊不出來
         assert_eq!(d.lost_total_range(), Some((2, 2)));
+
+        // 掉檔組合把「哪一軸掉」保留了下來，所以看得出真的只有這兩種搭配。
+        // 總掉檔相同（都是 2）時照元組字典序 —— 原程式那兩列 `14檔` 也是
+        // 第二軸 1 在 3 前面，同一個順序。
+        assert_eq!(
+            d.lost_combos.iter().map(|c| c.lost).collect::<Vec<_>>(),
+            vec![[0, 2, 0, 0, 0], [2, 0, 0, 0, 0]],
+            "逐軸邊際丟掉的搭配資訊，掉檔組合要留住"
+        );
+    }
+
+    /// ⭐ **穩掉** ＝ 逐軸最小掉檔，比「整條只剩一格」的 `determined_lost` 寬。
+    ///
+    /// 這是使用者實際回報的落差：體力的長條落在 2 跟 3 兩格上時
+    /// `determined_lost` 什麼都不說，但「至少掉了 2 檔」是確定的。
+    #[test]
+    fn guaranteed_lost_is_the_per_axis_minimum_not_just_the_pinned_axes() {
+        let catalog = GrowRange::new(30, 25, 18, 20, 22, DEFAULT_BPRATE);
+        let cands = vec![
+            // 體力掉 2、強度掉 4；第二筆體力改掉 3，強度還是 4
+            fake_candidate(catalog, GrowRange::new(28, 25, 14, 20, 22, DEFAULT_BPRATE)),
+            fake_candidate(catalog, GrowRange::new(27, 25, 14, 20, 22, DEFAULT_BPRATE)),
+        ];
+        let d = Distribution::summarize(catalog, &cands);
+
+        assert_eq!(
+            d.guaranteed_lost(),
+            [2, 0, 4, 0, 0],
+            "體力至少掉 2、強度固定掉 4"
+        );
+        // 對照組：只有強度那一軸是「整條只剩一格」的
+        assert_eq!(
+            d.determined_lost(),
+            [None, Some(0), Some(4), Some(0), Some(0)],
+            "體力有兩格，determined_lost 說不出話 —— 這就是要另外算穩掉的理由"
+        );
+    }
+
+    /// 掉檔組合的機率總和是 100，而且與逐軸邊際、總掉檔邊際三邊自洽。
+    #[test]
+    fn lost_combos_partition_the_whole_probability_mass() {
+        let (catalog, cands) = sample();
+        let d = Distribution::summarize(catalog, &cands);
+
+        let sum: f64 = d.lost_combos.iter().map(|c| c.percent).sum();
+        assert!((sum - 100.0).abs() < 1e-9, "掉檔組合的機率總和不是 100：{sum}");
+
+        // 總掉檔邊際 == 把組合按 total 收合
+        let mut folded = [0.0f64; TOTAL_LOST_SLOTS];
+        for c in &d.lost_combos {
+            folded[c.total as usize] += c.percent;
+        }
+        for (i, (&a, &b)) in folded.iter().zip(&d.lost_total_marginal).enumerate() {
+            assert!((a - b).abs() < 1e-9, "第 {i} 格的總掉檔機率對不上：{a} vs {b}");
+        }
+
+        // 逐軸邊際 == 把組合按該軸的掉檔量收合
+        for axis in 0..AXES {
+            let mut acc = [0.0f64; MAX_LOST_PER_AXIS as usize + 1];
+            for c in &d.lost_combos {
+                acc[c.lost[axis] as usize] += c.percent;
+            }
+            for (i, (&a, &b)) in acc.iter().zip(&d.lost_marginal[axis]).enumerate() {
+                assert!((a - b).abs() < 1e-9, "軸 {axis} 第 {i} 格對不上：{a} vs {b}");
+            }
+        }
+
+        // 排序：總掉檔小的在前面（原程式的結果欄就是這個順序）
+        assert!(
+            d.lost_combos.windows(2).all(|w| w[0].total <= w[1].total),
+            "掉檔組合沒有照總掉檔排序"
+        );
     }
 
     #[test]

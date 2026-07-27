@@ -275,6 +275,115 @@ fn the_total_loss_range_agrees_with_scanning_every_candidate() {
     }
 }
 
+/// ⭐ **穩掉** —— 每軸「一定至少掉了幾檔」，原程式主視窗結果欄的第一行。
+///
+/// 期望值一樣不是抄來的：逐筆掃 `candidates` 取每軸掉檔的最小值，跟 DTO 的
+/// `guaranteed_lost` 比。順便釘住它**比 `determined_lost` 寬** ——
+/// 使用者回報的就是這個落差（畫面只說「確定掉 4 檔」，沒說另外兩軸的下限）。
+#[test]
+fn the_guaranteed_loss_is_the_per_axis_minimum_over_every_candidate() {
+    let c = Case {
+        name: "小白鴨",
+        grow: [40, 45, 10, 20, 10],
+        lvl: 1,
+        stat: [118, 70, 47, 29, 30],
+    };
+    let resp = run(&c);
+    assert_eq!(resp["truncated"], json!(false), "被截斷了，這個對照不能用");
+
+    let cands = resp["candidates"].as_array().expect("沒有候選");
+    let scanned: Vec<i64> = (0..5)
+        .map(|axis| {
+            cands
+                .iter()
+                .map(|r| r["lost"][axis].as_i64().expect("候選沒有 lost"))
+                .min()
+                .expect("一筆都沒有")
+        })
+        .collect();
+
+    assert_eq!(
+        resp["distribution"]["guaranteed_lost"],
+        json!(scanned),
+        "穩掉跟逐筆掃出來的逐軸最小值不一樣"
+    );
+
+    // 穩掉一定 >= determined_lost 認得出來的那些（後者是前者的子集）
+    let determined = resp["distribution"]["determined_lost"].as_array().unwrap();
+    for (axis, d) in determined.iter().enumerate() {
+        if let Some(n) = d.as_i64() {
+            assert_eq!(n, scanned[axis], "軸 {axis}：定死的軸兩邊必須說同一個數");
+        }
+    }
+    assert!(
+        scanned.iter().any(|&n| n > 0),
+        "這個案例沒有任何一軸穩掉，測不到東西 —— 換一個"
+    );
+}
+
+/// 掉檔組合表：機率總和 100，而且與逐軸邊際／總掉檔邊際三邊自洽。
+///
+/// 這是使用者說原版「比較直觀」的那一塊 —— 原程式把候選收成幾列
+/// `13檔 … 28.45%`，加起來剛好 100%。
+#[test]
+fn the_lost_combos_partition_the_probability_mass_on_real_data() {
+    for c in [
+        Case {
+            name: "小白鴨",
+            grow: [40, 45, 10, 20, 10],
+            lvl: 1,
+            stat: [118, 70, 47, 29, 30],
+        },
+        Case {
+            name: "深海鳥魔",
+            grow: [30, 7, 13, 27, 48],
+            lvl: 1,
+            stat: [106, 138, 29, 34, 33],
+        },
+    ] {
+        let resp = run(&c);
+        let combos = resp["distribution"]["lost_combos"]
+            .as_array()
+            .expect("沒有掉檔組合");
+
+        let sum: f64 = combos.iter().map(|r| r["percent"].as_f64().unwrap()).sum();
+        assert!(
+            (sum - 100.0).abs() < 1e-9,
+            "{}：掉檔組合的機率總和是 {sum}，不是 100",
+            c.name
+        );
+
+        // 每一列的 total 就是那五個數字的和，排序由小到大
+        let mut prev = i64::MIN;
+        for row in combos {
+            let lost: Vec<i64> = row["lost"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_i64().unwrap())
+                .collect();
+            let total = row["total"].as_i64().unwrap();
+            assert_eq!(total, lost.iter().sum::<i64>(), "{}：total 對不上", c.name);
+            assert!(total >= prev, "{}：沒有照總掉檔排序", c.name);
+            prev = total;
+        }
+
+        // 收合回總掉檔邊際要一致 —— 兩邊是同一圈掃出來的，不該有偏差
+        let marg = resp["distribution"]["lost_total_marginal"].as_array().unwrap();
+        let mut folded = vec![0.0f64; marg.len()];
+        for row in combos {
+            folded[row["total"].as_u64().unwrap() as usize] += row["percent"].as_f64().unwrap();
+        }
+        for (i, (a, b)) in folded.iter().zip(marg).enumerate() {
+            assert!(
+                (a - b.as_f64().unwrap()).abs() < 1e-9,
+                "{}：第 {i} 格的總掉檔機率對不上",
+                c.name
+            );
+        }
+    }
+}
+
 /// ⭐ 真實資料上，總掉檔範圍**確實推不出來** —— 這就是統計那邊要多存一份的理由。
 ///
 /// 逐軸邊際只說得出「這一軸可能掉幾檔」，各軸最小值的和只是總和的**下界**，

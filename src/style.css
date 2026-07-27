@@ -1021,6 +1021,75 @@ table.grid td.lost {
     color: var(--ink-dim);
 }
 
+/* ⭐ 穩掉 —— 原程式結果欄的第一行，這裡也放在最上面當標題。 */
+.sure-loss {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 8px;
+    padding: 4px 9px;
+    background: #d8ebd6;
+    border: 1px solid var(--good);
+    border-radius: 3px;
+}
+.sure-loss .sl-k {
+    font-size: 12px;
+    letter-spacing: 1px;
+    color: var(--ink-dim);
+}
+.sure-loss .sl-v {
+    font: 700 15px var(--mono);
+    color: #2f6b39;
+}
+.sure-loss .sl-v em {
+    margin-left: 1px;
+    font: 400 11px var(--font);
+    color: var(--ink-dim);
+}
+.sure-loss .sl-none {
+    font-size: 11px;
+    color: var(--ink-dim);
+}
+
+/* 掉檔組合表：原程式那幾列。可能有兩百多列，所以捲動不撐版面。 */
+.combo-block {
+    margin-bottom: 8px;
+}
+.combo-block h4 {
+    margin: 0 0 3px;
+    font-size: 12px;
+    letter-spacing: 1px;
+}
+.combo-block h4 .sub-note {
+    margin-left: 6px;
+    font-size: 10px;
+    font-weight: 400;
+    letter-spacing: 0;
+    color: var(--ink-dim);
+}
+/* 寬度收到表格本身 —— 這張表只有七欄，撐滿版面會留一大片空白。 */
+.combo-wrap {
+    width: fit-content;
+    max-width: 100%;
+    max-height: 176px;
+    overflow: auto;
+    border: 1px solid var(--edge-soft);
+    border-radius: 3px;
+}
+.grid.combos {
+    width: auto;
+}
+.grid.combos thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+.grid.combos tr.peak td {
+    background: #d8ebd6;
+    font-weight: 700;
+}
+
 /* 候選明細裡的「總掉檔」欄：跟逐軸那五格分開一點，免得看成第六軸。 */
 .grid th.tot,
 .grid td.tot {

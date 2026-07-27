@@ -213,6 +213,8 @@ const Marginals = ({ d, constants }) => {
 
     return html`
         <div class="marginals">
+            <${SureLoss} d=${d} />
+            <${LostCombos} d=${d} />
             ${totalBlock}
             <${MargBlock}
                 title="掉檔機率"
@@ -224,6 +226,90 @@ const Marginals = ({ d, constants }) => {
                     d.determined_lost[axis] != null ? `確定掉 ${d.determined_lost[axis]} 檔` : ''}
             />
             ${randomBlock}
+        </div>
+    `;
+};
+
+/**
+ * ⭐ **穩掉** —— 每一軸「一定至少掉了幾檔」。原程式主視窗結果欄的第一行就是它
+ * （`穩掉：2體 4防 3魔`，掉 0 檔的軸不列）。
+ *
+ * ⚠️ 這**不是** `determined_lost`。那個只認「整條長條圖只剩一格」的軸，所以
+ * 體力可能掉 2/3/4 檔時它一句話都不說 —— 但「至少掉 2 檔」明明就是確定的。
+ * 使用者回報的正是這個落差：畫面只講「確定掉 4 檔（強度）」，沒講體力 2、魔法 3。
+ *
+ * 值一律由引擎的 `guaranteed_lost` 給，不要在這裡自己掃 `lost_marginal` 找第一個
+ * 非零格 —— 判準（權重 > 0）是引擎那邊定的，兩邊各寫一次就會有一天不一樣。
+ */
+const SureLoss = ({ d }) => {
+    const hit = d.guaranteed_lost.map((n, axis) => ({ n, axis })).filter((x) => x.n > 0);
+
+    return html`
+        <div class="sure-loss">
+            <span class="sl-k">穩掉</span>
+            ${
+                hit.length === 0
+                    ? html`<span class="sl-none">沒有哪一軸是一定會掉的</span>`
+                    : hit.map(
+                          ({ n, axis }) => html`
+                              <span class="sl-v" key=${axis}>${n}<em>${AXIS[axis]}</em></span>
+                          `,
+                      )
+            }
+        </div>
+    `;
+};
+
+/**
+ * 相異的**掉檔組合**與各自的機率 —— 原程式結果欄那幾列。
+ *
+ * 這是使用者說原版「比較直觀」的那一塊：71 組解會收成 3 列
+ * （`13檔 … 28.45%` / `14檔 … 30.51%` / `14檔 … 41.04%`，加起來剛好 100%）。
+ * 逐軸邊際做不到這件事 —— 它把「哪一軸配哪一軸」丟掉了，所以看不出
+ * 「掉 13 檔的時候是哪五個數字」。
+ *
+ * 順序照原程式：總掉檔遞增，同總掉檔時照元組遞增（引擎已經排好，這裡不再動）。
+ *
+ * ⚠️ **符號跟原程式相反。** 原程式存的是 `−lost` 也照那樣顯示（`-2 -2 -4 -4 -3`），
+ * 這裡印正數 —— 因為同一塊面板底下的「候選明細」早就用正數了，
+ * 一個面板裡兩張表對同一件事用相反的符號比對齊原版更容易看錯。
+ * 這是純顯示層的選擇，數值本身一模一樣。
+ */
+const LostCombos = ({ d }) => {
+    const combos = d.lost_combos ?? [];
+    if (combos.length === 0) return null;
+    const peak = Math.max(...combos.map((c) => c.percent));
+
+    return html`
+        <div class="combo-block">
+            <h4>掉檔組合<span class="sub-note">${combos.length} 種</span></h4>
+            <div class="combo-wrap">
+                <table class="grid combos">
+                    <thead>
+                        <tr>
+                            <th class="tot" title="這一組的總掉檔數">總</th>
+                            ${AXIS.map((a) => html`<th key=${a}>${a}</th>`)}
+                            <th class="pct">機率</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${combos.map(
+                            (c, i) => html`
+                                <tr key=${i} class=${c.percent === peak ? 'peak' : ''}>
+                                    <td class="tot">${c.total}</td>
+                                    ${c.lost.map(
+                                        (v, j) =>
+                                            html`<td key=${j} class=${v ? 'lost' : 'zero'}>
+                                                ${v || '·'}
+                                            </td>`,
+                                    )}
+                                    <td class="pct">${c.percent.toFixed(2)}%</td>
+                                </tr>
+                            `,
+                        )}
+                    </tbody>
+                </table>
+            </div>
         </div>
     `;
 };
