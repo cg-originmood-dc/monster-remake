@@ -1230,18 +1230,25 @@ table.grid td.lost {
 .more-info .row {
     margin: 0;
 }
-/* 已確定的欄位。原程式是把那格 `Enabled` 設成 false —— Delphi 的 disabled TEdit
- * 是**淺底灰字**，不是繼續當一條深色凹槽，所以這裡整格翻成淺色而不是只調透明度。
+/* ⭐ 已確定的欄位**不畫**。
  *
- * 沿用預設的 `.field:disabled { opacity: .45 }` 試過了：深底 ＋ 半透明的字，
- * 那個數字幾乎看不見 —— 而它是推算的答案，看不清楚就等於白確定了。 */
-.more-info .field:disabled {
-    opacity: 1;
-    color: var(--teal-ink);
-    background: var(--paper-lo);
-    border-color: var(--edge);
-    border-style: dashed;
+ * 這裡本來把它畫成一格反白的唯讀欄，理由寫的是「原程式把 `Enabled` 設成 false」
+ * —— 那句看錯了：那支呼叫送的是 `CM_VISIBLECHANGED`，是 `SetVisible` 不是
+ * `SetEnabled`，而且標籤與輸入框是**一起**被關掉的。所以原程式的行為是
+ * 那一欄整個從畫面上消失，不是留在那裡變灰。現在由 `refine.js` 決定畫哪幾格，
+ * CSS 這邊什麼都不用做。 */
+
+/* 篩到 0 組時，剛動的那一格標籤變成「選錯」（原程式寫死的那兩個字）。 */
+.more-info .axis-names .wrong {
+    color: var(--bad);
     font-weight: 700;
+}
+/* 收窄後的掉檔範圍。這一行是在講「我剛剛動了側欄的搜尋範圍」，
+ * 原程式那個寫回動作沒有任何提示，但它的搜尋範圍是獨立一頁看得見的。 */
+.more-info .mi-narrow {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--ink-dim);
 }
 .more-info.skipped {
     display: flex;

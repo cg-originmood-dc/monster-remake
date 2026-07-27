@@ -82,6 +82,14 @@ export function App({ boot }) {
 
     const set = useCallback((patch) => setS((prev) => ({ ...prev, ...patch })), []);
 
+    // 「輸入更多資訊」篩完之後，把收窄的掉檔範圍寫回分析頁的搜尋範圍
+    // —— 原程式篩完就是這樣改那一欄的，下次按計算就在收窄過的空間裡重推。
+    // ⚠️ 這裡**不會**自動重推：改的是下一次的輸入，不是這一次的結果。
+    const narrowRanges = useCallback(
+        (bounds) => setS((prev) => ({ ...prev, ranges: { ...prev.ranges, ...bounds } })),
+        [],
+    );
+
     // 帶圖鑑進去，這格才認得出 `幽紫妖靈 99 133 32 38 36` 開頭的寵物名（見 `parse.js`）。
     const parsed = useMemo(() => parseStats(s.statText, catalog.pets), [s.statText, catalog.pets]);
     // 「入手能力」跟「當前能力」用同一個寬鬆解析器 —— 使用者兩格都是用貼的。
@@ -327,7 +335,7 @@ export function App({ boot }) {
             </div>
 
             ${tab === 'expand' && html`<${StatStrip} row=${preview} constants=${constants} />`}
-            <${GuessResults} resp=${guessResp} constants=${constants} />
+            <${GuessResults} resp=${guessResp} constants=${constants} onNarrow=${narrowRanges} />
             <${SeriesTable} rows=${seriesRows} constants=${constants} />
 
             ${

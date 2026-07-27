@@ -29,8 +29,13 @@ import { MoreInfo } from './refine.js';
 
 const AXIS = ['體', '力', '防', '敏', '魔'];
 
-/** 推算結果：逐軸邊際分布（原程式的答案）＋ 候選明細（附錄）。 */
-export const GuessResults = ({ resp, constants }) => {
+/**
+ * 推算結果：逐軸邊際分布（原程式的答案）＋ 候選明細（附錄）。
+ *
+ * `onNarrow` 是「輸入更多資訊」篩完之後把掉檔範圍寫回側欄搜尋範圍的出口
+ * —— 原程式也是這樣回頭改那一欄的（見 `refine.js`）。
+ */
+export const GuessResults = ({ resp, constants, onNarrow }) => {
     // hooks 不能擺在早退後面，所以這兩行一定要跑得到。
     const [refined, setRefined] = useState(null);
     // 篩選結果綁在**它篩的那一次推算**上 —— `resp` 一換，上一次的結果同一拍就失效。
@@ -76,7 +81,7 @@ export const GuessResults = ({ resp, constants }) => {
             </div>
 
             <${MoreInfo} resp=${resp} constants=${constants} out=${fresh}
-                onResult=${(out) => setRefined({ of: resp, out })} />
+                onResult=${(out) => setRefined({ of: resp, out })} onNarrow=${onNarrow} />
 
             ${d && html`<${Marginals} d=${d} constants=${constants} />`}
 

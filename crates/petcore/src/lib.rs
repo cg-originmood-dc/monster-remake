@@ -1003,8 +1003,12 @@ mod tests {
 
     /// 12 欄全確定 ＝ 原程式收工、不再追問的那一刻。
     ///
-    /// 用「把 12 格全照某一組候選填滿」來構造那個狀態，而不是去找一個剛好
-    /// 一步到位的案例 —— 後者換個等級就不成立，前者對任何案例都成立。
+    /// ⭐ **那 12 欄是精神／回復 ＋ BP 五軸 ＋ 檔次五軸**，不含生命 魔力 攻擊
+    /// 防禦 敏捷 —— 那五格是推算的輸入，原程式從來沒問過（見 [`RefineReq`]）。
+    /// 這條測試就填那 12 格，不碰前五格；`all` 若還把它們算進去就會紅。
+    ///
+    /// 用「照某一組候選填滿」來構造收工狀態，而不是去找一個剛好一步到位的案例
+    /// —— 後者換個等級就不成立，前者對任何案例都成立。
     #[test]
     fn every_column_settling_is_how_the_questions_end() {
         let (e, resp) = wild_guess(60);
@@ -1014,7 +1018,8 @@ mod tests {
             .dispatch_ref(
                 "refine",
                 j!({ "req": {
-                    "stat": [s["hp"], s["mp"], s["atk"], s["def"], s["agi"], s["wis"], s["res"]],
+                    "stat": [null, null, null, null, null, s["wis"], s["res"]],
+                    "bp": c["bp"],
                     "grow": c["grow"]
                 }}),
             )
@@ -1025,13 +1030,40 @@ mod tests {
             "12 格都填滿了還說沒定下來：{}",
             out["settled"]
         );
-        // `all` 為真時，12 欄一格都不能是 null —— 不然畫面會說「問完了」卻還留著空格。
-        for col in out["settled"]["stat"].as_array().unwrap() {
+        // `all` 為真時，那 12 欄一格都不能是 null —— 不然畫面會說「問完了」卻還留著空格。
+        for col in [5, 6] {
+            assert!(!out["settled"]["stat"][col].is_null(), "能力第 {col} 欄");
+        }
+        for col in out["settled"]["bp"].as_array().unwrap() {
             assert!(!col.is_null());
         }
         for col in out["settled"]["grow"].as_array().unwrap() {
             assert!(!col.is_null());
         }
+    }
+
+    /// BP 是這一排最有力的篩選條件 —— 它把加點與隨機檔分得很開，
+    /// 而且遊戲的「寵物狀態」視窗直接印這五個數，使用者抄得到。
+    ///
+    /// ⚠️ 比對走的是 ±0.05（＝ 遊戲那一位小數的半格），不是逐位相同：
+    /// 拿候選自己的 BP **四捨五入到一位小數**再填回去，仍然要篩得到它。
+    /// 這正是使用者實際會做的事。
+    #[test]
+    fn the_bp_column_survives_being_read_off_the_game_at_one_decimal() {
+        let (e, resp) = wild_guess(60);
+        let c = &resp["candidates"][0];
+        let rounded: Vec<f64> = c["bp"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| (v.as_f64().unwrap() * 10.0).round() / 10.0)
+            .collect();
+        let out = e
+            .dispatch_ref("refine", j!({ "req": { "bp": rounded } }))
+            .unwrap();
+        let kept = out["result"]["total"].as_u64().unwrap();
+        assert!(kept > 0, "把候選自己的 BP 抄成一位小數填回去，卻篩到空的");
+        assert!(kept < resp["total"].as_u64().unwrap(), "BP 沒篩掉任何東西，測不出效果");
     }
 
     /// `settled` 說某欄確定，就必須真的是所有倖存候選都同一個值 ——
@@ -1055,6 +1087,32 @@ mod tests {
                 .collect();
             let uniform = vals.iter().all(|v| *v == vals[0]).then_some(vals[0]);
             assert_eq!(out["settled"]["grow"][axis].as_i64(), uniform, "檔次第 {axis} 軸");
+
+            let bps: Vec<f64> = cands.iter().map(|c| c["bp"][axis].as_f64().unwrap()).collect();
+            let uniform = bps.iter().all(|v| (v - bps[0]).abs() < 0.05).then_some(bps[0]);
+            assert_eq!(out["settled"]["bp"][axis].as_f64(), uniform, "BP 第 {axis} 軸");
+        }
+    }
+
+    /// ⭐ 篩完要回頭把掉檔範圍收窄 —— 原程式就是這樣改「搜尋範圍」那一欄的。
+    ///
+    /// 期望值由**掃全部倖存候選**算出來，不是寫死的。
+    /// 另外釘住「不能拿 `lost_marginal` 代替」：那張表只有 0..=4 五格。
+    #[test]
+    fn the_narrowed_loss_range_scans_every_survivor() {
+        let (e, _) = wild_guess(60);
+        let out = e.dispatch_ref("refine", j!({ "req": {} })).unwrap();
+        let cands = out["result"]["candidates"].as_array().unwrap();
+        assert!(!out["result"]["truncated"].as_bool().unwrap(), "被截斷就不能拿列表當全集");
+
+        for axis in 0..petcalc::AXES {
+            let lost: Vec<i64> = cands
+                .iter()
+                .map(|c| c["lost"][axis].as_i64().unwrap())
+                .collect();
+            let want = [*lost.iter().min().unwrap(), *lost.iter().max().unwrap()];
+            let got = &out["narrowed_loss"][axis];
+            assert_eq!([got[0].as_i64().unwrap(), got[1].as_i64().unwrap()], want, "第 {axis} 軸");
         }
     }
 

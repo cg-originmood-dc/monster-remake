@@ -859,47 +859,71 @@ impl ProbabilityReq {
 
 // ── 推算後的再篩選（原程式的「輸入更多資訊」）──────────────────────────────
 
-/// 12 個篩選框：7 欄能力 ＋ 5 欄檔次，`null` ＝ 留空（原程式存 `-1`）。
+/// 12 個篩選框，`null` ＝ 留空（原程式存 `-1`）。
 ///
 /// ## 這是原程式的第二段，不是移植版發明的
 ///
 /// 原程式推算完不會就結束：它把候選表留著，然後**在同一批候選上再掃一遍**，
 /// 拿你補充的資訊把解砍掉。每動一格就重掃一次，某一欄在所有倖存候選裡
-/// 只剩一個值時，那格會被反白停用（沒必要再問），12 欄全確定就收工。
+/// 只剩一個值時，那格連同它的標籤會被**隱藏**（沒必要再問），全部問完就收工。
 ///
-/// 移植版先前只做了輸出那幾半（邊際分布、掉檔組合、機率查詢），
-/// 輸入這一半整個沒做 —— 使用者問的正是這個。
+/// ## ⭐ 原程式問的是哪 12 欄
 ///
-/// ## 為什麼這幾格問得出新東西
+/// 這裡先前寫的是「7 欄能力 ＋ 5 欄檔次」，**錯了**。原程式那 12 個標籤的
+/// 文字是編在執行檔裡的常數，逐一解出來是：
 ///
-/// 推算的輸入只有 5 項能力（[`TargetDto`] 沒有精神／回復），所以**精神與回復
-/// 在候選之間是會變的** —— 那兩格是真的在給新資訊。5 欄檔次同理。
-/// 另外 5 格（生命 魔力 攻擊 防禦 敏捷）已經被查詢本身釘死，填了也篩不掉東西，
-/// 但照樣留著：原程式就是 7 格，而且它們會在第一次篩選後自己變成「已確定」。
+/// | 欄     | 1    | 2    | 3–7                       | 8–12                      |
+/// | ------ | ---- | ---- | ------------------------- | ------------------------- |
+/// | 標籤   | 精神 | 回復 | 體力 力量 強度 速度 魔法  | 體力 力量 強度 速度 魔法  |
+/// | 是什麼 | 能力 | 能力 | **逐軸 BP**               | **檔次**                  |
 ///
-/// ## 容差在這裡沒有對應物
+/// 後面兩組標籤一樣，靠比對方式分辨：8–12 走的是檔次專用的那段 ±容差
+/// （只在 `檔次 mod 5 ∈ {0,1}` 放寬，見 CLAUDE.md §3.4），3–7 走的是
+/// 「把值格式化成字串再比」——**只有 BP 是小數**，所以那條路只可能是 BP。
 ///
-/// 原程式比對檔次時有一段 ±容差，只在 `檔次 mod 5 ∈ {0, 1}` 時放寬（§3.4）。
-/// 那是因為它的候選表把檔次存成**浮點**（由 BP 反算），`Trunc` 會在
-/// 係數表五週期的不規則處差 1；容差是拿來修那個取整邊界的。
+/// ⭐ **生命 魔力 攻擊 防禦 敏捷 五格根本不在問題裡。** 它們是推算的輸入，
+/// 早就被釘死了，問了也篩不掉東西 —— 原程式從一開始就沒把它們列進來。
+/// 移植版先前照著「7 欄能力」的誤解畫了那五格，還得在旁邊解釋它們為什麼
+/// 沒有自動變灰（[`Candidate::stat`] 是**沒加偏移**那份 BP 反算的，
+/// 容差命中的候選會差 1）。現在那五格拿掉了，那段解釋也跟著消失。
+///
+/// ## 容差在檔次這一欄沒有對應物
+///
+/// 原程式比對檔次時有一段 ±容差（§3.4），是因為它的候選表把檔次存成**浮點**
+/// （由 BP 反算），`Trunc` 會在係數表五週期的不規則處差 1。
 /// 移植版的 [`Candidate::grow`] 是列舉出來的**整數**，取整這一步根本不存在，
 /// 所以這裡是整數相等 —— 不是把容差漏掉，是它沒有東西可以修。
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct RefineReq {
     /// 生命 魔力 攻擊 防禦 敏捷 精神 回復。
+    ///
+    /// ⚠️ 原程式只問**精神（index 5）與回復（index 6）**，前五格不在它的
+    /// 12 欄裡（見型別說明）。七格照樣收下：這一層是純粹的過濾器，
+    /// 少一個維度不會讓它變簡單，而砍掉欄位反而會讓既有的請求變成不合法。
     #[serde(default)]
     pub stat: [Option<i64>; petcalc::STATS],
+    /// 逐軸 BP，軸順序 `[HP, ATK, DEF, AGI, MP]`。
+    ///
+    /// 遊戲的「寵物狀態」視窗直接印這五個數，所以這是使用者**抄得到**的東西，
+    /// 而且它把加點與隨機檔分得很開 —— 是這一排最有力的篩選條件。
+    #[serde(default)]
+    pub bp: [Option<f64>; AXES],
     /// 檔次，BP 軸順序 `[HP, ATK, DEF, AGI, MP]`。
     #[serde(default)]
     pub grow: [Option<i32>; AXES],
 }
 
-/// 每一欄「所有倖存候選是否同一個值」—— 是的話原程式把那格停用。
+/// 每一欄「所有倖存候選是否同一個值」—— 是的話原程式把那格藏起來。
 #[derive(Debug, Clone, Serialize)]
 pub struct RefineSettled {
     pub stat: [Option<i64>; petcalc::STATS],
+    pub bp: [Option<f64>; AXES],
     pub grow: [Option<i32>; AXES],
-    /// 12 欄全部確定 —— 原程式在這一刻收工，不再追問。
+    /// **原程式問的那 12 欄**全部確定 —— 它在這一刻收工，不再追問。
+    ///
+    /// 精神／回復 ＋ BP 五軸 ＋ 檔次五軸。生命 魔力 攻擊 防禦 敏捷
+    /// 不算在內：原程式沒問它們，而且移植版的容差候選讓它們可能永遠不一致
+    /// （見 [`RefineReq`]），算進來的話這面板就永遠收不了工。
     pub all: bool,
 }
 
@@ -918,6 +942,17 @@ pub struct RefineResp {
     /// 原本那個「還剩多少」的資訊就搬到這個欄位，沒有弄丟。
     pub kept_percent: f64,
     pub settled: RefineSettled,
+    /// 倖存候選的逐軸掉檔範圍 `[最小, 最大]`，沒有候選時是 `null`。
+    ///
+    /// ⭐ **原程式篩完就是這樣回頭改「搜尋範圍」的**：它掃一遍倖存候選累出
+    /// 逐軸的檔次 min/max，換算成 `圖鑑 − min`（掉檔上限）與 `圖鑑 − max`
+    /// （掉檔下限），組成 `上限五個;下限五個` 塞回那個輸入框（見 §4.3）。
+    /// 下次按計算就會在收窄過的空間裡重推。
+    ///
+    /// ⚠️ **不能拿 [`DistributionDto::lost_marginal`] 算這個。** 那張表只有
+    /// `0..=4` 五格，掉更多的候選會被**默默丟掉**（`petcalc::stats` 那裡寧可
+    /// 漏統計也不 panic），拿它取頭尾會把範圍算窄。這裡掃的是完整的倖存集。
+    pub narrowed_loss: Option<[[i32; 2]; AXES]>,
 }
 
 impl RefineReq {
@@ -941,6 +976,7 @@ impl RefineReq {
         }
 
         let settled = RefineSettled::over(&kept);
+        let narrowed_loss = narrowed_loss(catalog, &kept);
         let outcome = petcalc::GuessOutcome {
             candidates: kept,
             mode,
@@ -952,6 +988,7 @@ impl RefineReq {
             before: cache.len(),
             kept_percent,
             settled,
+            narrowed_loss,
         }
     }
 
@@ -960,9 +997,46 @@ impl RefineReq {
         if (0..petcalc::STATS).any(|i| matches!(self.stat[i], Some(w) if w != stat[i])) {
             return false;
         }
+        let bp = c.bp.to_array();
+        if (0..AXES).any(|i| matches!(self.bp[i], Some(w) if !bp_hit(bp[i], w))) {
+            return false;
+        }
         let grow = c.grow.to_array();
         !(0..AXES).any(|i| matches!(self.grow[i], Some(w) if w != grow[i]))
     }
+}
+
+/// 掃倖存候選，逐軸算出 `[最小掉檔, 最大掉檔]`。
+///
+/// 原程式是累 **檔次** 的 min/max 再用圖鑑換算，等價；這裡直接算掉檔，
+/// 少一次轉換也少一次符號搞反的機會。
+fn narrowed_loss(catalog: GrowRange, kept: &[Candidate]) -> Option<[[i32; 2]; AXES]> {
+    if kept.is_empty() {
+        return None;
+    }
+    let cat = catalog.to_array();
+    Some(std::array::from_fn(|i| {
+        let mut lo = i32::MAX;
+        let mut hi = i32::MIN;
+        for c in kept {
+            let lost = cat[i] - c.grow.to_array()[i];
+            lo = lo.min(lost);
+            hi = hi.max(lost);
+        }
+        [lo, hi]
+    }))
+}
+
+/// 使用者填的 BP 對不對得上候選的 BP。
+///
+/// 原程式是把兩邊都格式化成字串再比（長度超過 8 才退成兩位小數，那是給
+/// 浮點雜訊用的後路），等於**同一個十進位寫法才算數**。移植版放寬成 ±0.05，
+/// 理由是這一格的值使用者只可能從**遊戲的寵物狀態視窗**抄，而那裡印的是
+/// **一位小數**；BP 本身的最小刻度是 0.005（成長係數表有半階），
+/// 照原程式那樣要求逐位相同的話，抄 `8.4` 進來就對不上真值 `8.415`。
+/// 取半格（0.05）＝ 「你讀到的那個一位小數所代表的區間」，不會比需要的更嚴。
+fn bp_hit(actual: f64, typed: f64) -> bool {
+    (actual - typed).abs() < 0.05
 }
 
 impl RefineSettled {
@@ -972,16 +1046,25 @@ impl RefineSettled {
         let Some(first) = kept.first() else {
             return Self {
                 stat: [None; petcalc::STATS],
+                bp: [None; AXES],
                 grow: [None; AXES],
                 all: false,
             };
         };
         let head_stat = stat_columns(first.stat);
+        let head_bp = first.bp.to_array();
         let head_grow = first.grow.to_array();
         let stat = std::array::from_fn(|i| {
             kept.iter()
                 .all(|c| stat_columns(c.stat)[i] == head_stat[i])
                 .then_some(head_stat[i])
+        });
+        // BP 是浮點，但同一組 (檔次, 加點, 隨機檔) 算出來的位元是一樣的，
+        // 所以「一致」比的是**顯示得出來的那個值**，跟 `bp_hit` 用同一把尺。
+        let bp = std::array::from_fn(|i| {
+            kept.iter()
+                .all(|c| bp_hit(c.bp.to_array()[i], head_bp[i]))
+                .then_some(head_bp[i])
         });
         let grow = std::array::from_fn(|i| {
             kept.iter()
@@ -989,8 +1072,13 @@ impl RefineSettled {
                 .then_some(head_grow[i])
         });
         Self {
-            all: stat.iter().all(Option::is_some) && grow.iter().all(Option::is_some),
+            // ⭐ 只數原程式問的那 12 欄 —— 精神／回復 ＋ BP 五軸 ＋ 檔次五軸。
+            all: stat[5].is_some()
+                && stat[6].is_some()
+                && bp.iter().all(Option::is_some)
+                && grow.iter().all(Option::is_some),
             stat,
+            bp,
             grow,
         }
     }
