@@ -857,6 +857,150 @@ impl ProbabilityReq {
     }
 }
 
+// ── 推算後的再篩選（原程式的「輸入更多資訊」）──────────────────────────────
+
+/// 12 個篩選框：7 欄能力 ＋ 5 欄檔次，`null` ＝ 留空（原程式存 `-1`）。
+///
+/// ## 這是原程式的第二段，不是移植版發明的
+///
+/// 原程式推算完不會就結束：它把候選表留著，然後**在同一批候選上再掃一遍**，
+/// 拿你補充的資訊把解砍掉。每動一格就重掃一次，某一欄在所有倖存候選裡
+/// 只剩一個值時，那格會被反白停用（沒必要再問），12 欄全確定就收工。
+///
+/// 移植版先前只做了輸出那幾半（邊際分布、掉檔組合、機率查詢），
+/// 輸入這一半整個沒做 —— 使用者問的正是這個。
+///
+/// ## 為什麼這幾格問得出新東西
+///
+/// 推算的輸入只有 5 項能力（[`TargetDto`] 沒有精神／回復），所以**精神與回復
+/// 在候選之間是會變的** —— 那兩格是真的在給新資訊。5 欄檔次同理。
+/// 另外 5 格（生命 魔力 攻擊 防禦 敏捷）已經被查詢本身釘死，填了也篩不掉東西，
+/// 但照樣留著：原程式就是 7 格，而且它們會在第一次篩選後自己變成「已確定」。
+///
+/// ## 容差在這裡沒有對應物
+///
+/// 原程式比對檔次時有一段 ±容差，只在 `檔次 mod 5 ∈ {0, 1}` 時放寬（§3.4）。
+/// 那是因為它的候選表把檔次存成**浮點**（由 BP 反算），`Trunc` 會在
+/// 係數表五週期的不規則處差 1；容差是拿來修那個取整邊界的。
+/// 移植版的 [`Candidate::grow`] 是列舉出來的**整數**，取整這一步根本不存在，
+/// 所以這裡是整數相等 —— 不是把容差漏掉，是它沒有東西可以修。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RefineReq {
+    /// 生命 魔力 攻擊 防禦 敏捷 精神 回復。
+    #[serde(default)]
+    pub stat: [Option<i64>; petcalc::STATS],
+    /// 檔次，BP 軸順序 `[HP, ATK, DEF, AGI, MP]`。
+    #[serde(default)]
+    pub grow: [Option<i32>; AXES],
+}
+
+/// 每一欄「所有倖存候選是否同一個值」—— 是的話原程式把那格停用。
+#[derive(Debug, Clone, Serialize)]
+pub struct RefineSettled {
+    pub stat: [Option<i64>; petcalc::STATS],
+    pub grow: [Option<i32>; AXES],
+    /// 12 欄全部確定 —— 原程式在這一刻收工，不再追問。
+    pub all: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RefineResp {
+    /// 篩完之後的結果，形狀跟 [`GuessResp`] 一模一樣 ——
+    /// 前端可以拿同一組元件畫，不必為篩選結果另做一套。
+    pub result: GuessResp,
+    /// 篩之前的候選數，讓畫面能講「N 組裡剩 M 組」。
+    pub before: usize,
+    /// 倖存候選佔原本機率總量的百分比。
+    ///
+    /// ⚠️ `result` 裡的機率是**對倖存集重新正規化**過的（加起來 100%），
+    /// 原程式則是留著原本的權重不重算。改成重算是為了讓篩選結果能沿用
+    /// 同一組顯示元件（掉檔組合那張表加起來要是 100% 才看得懂），
+    /// 原本那個「還剩多少」的資訊就搬到這個欄位，沒有弄丟。
+    pub kept_percent: f64,
+    pub settled: RefineSettled,
+}
+
+impl RefineReq {
+    /// 掃一遍候選表，套 12 個框。留空的欄不比對。
+    pub fn eval(
+        &self,
+        catalog: GrowRange,
+        cache: &[Candidate],
+        dist: &Distribution,
+        mode: MatchMode,
+        point: i32,
+        max_rows: usize,
+    ) -> RefineResp {
+        let mut kept_percent = 0.0;
+        let mut kept: Vec<Candidate> = Vec::new();
+        for (i, c) in cache.iter().enumerate() {
+            if self.keeps(c) {
+                kept.push(*c);
+                kept_percent += dist.percent[i];
+            }
+        }
+
+        let settled = RefineSettled::over(&kept);
+        let outcome = petcalc::GuessOutcome {
+            candidates: kept,
+            mode,
+            point,
+        };
+        let (result, _) = build_guess_resp(catalog, &outcome, max_rows);
+        RefineResp {
+            result,
+            before: cache.len(),
+            kept_percent,
+            settled,
+        }
+    }
+
+    fn keeps(&self, c: &Candidate) -> bool {
+        let stat = stat_columns(c.stat);
+        if (0..petcalc::STATS).any(|i| matches!(self.stat[i], Some(w) if w != stat[i])) {
+            return false;
+        }
+        let grow = c.grow.to_array();
+        !(0..AXES).any(|i| matches!(self.grow[i], Some(w) if w != grow[i]))
+    }
+}
+
+impl RefineSettled {
+    fn over(kept: &[Candidate]) -> Self {
+        // 一格都沒剩就沒有「確定」可言 —— 全部留空，`all` 也不能是 true，
+        // 否則畫面會把「篩到空的」說成「全部問完了」。
+        let Some(first) = kept.first() else {
+            return Self {
+                stat: [None; petcalc::STATS],
+                grow: [None; AXES],
+                all: false,
+            };
+        };
+        let head_stat = stat_columns(first.stat);
+        let head_grow = first.grow.to_array();
+        let stat = std::array::from_fn(|i| {
+            kept.iter()
+                .all(|c| stat_columns(c.stat)[i] == head_stat[i])
+                .then_some(head_stat[i])
+        });
+        let grow = std::array::from_fn(|i| {
+            kept.iter()
+                .all(|c| c.grow.to_array()[i] == head_grow[i])
+                .then_some(head_grow[i])
+        });
+        Self {
+            all: stat.iter().all(Option::is_some) && grow.iter().all(Option::is_some),
+            stat,
+            grow,
+        }
+    }
+}
+
+/// 能力值攤成 12 格篩選器的前 7 欄，順序跟 [`StatDto`] 一致。
+fn stat_columns(s: Stat) -> [i64; petcalc::STATS] {
+    [s.hp, s.mp, s.atk, s.def, s.agi, s.wis, s.res]
+}
+
 // ── 寵物搜尋 ───────────────────────────────────────────────────────────────
 
 /// 「搜索不低於輸入能力的寵物」的輸入。

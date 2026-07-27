@@ -202,6 +202,14 @@ const MATCH_MODES = [
     { key: 'auto', label: '自動', title: '由緊到鬆：精確 → 魔觀 → 寬鬆，第一個有解的就用' },
 ];
 
+/**
+ * 比對模式的顯示名稱。
+ *
+ * 掛在這裡而不是結果那邊，是因為**上面那張表就是唯一的來源** ——
+ * 同一個模式在側欄叫「魔觀」、在結果欄叫別的名字，是分兩處寫遲早會出的事。
+ */
+export const modeName = (m) => MATCH_MODES.find((o) => o.key === m)?.label ?? m;
+
 const MATCH_MODE_HINT = {
     observer: '原程式的規則：只修「檔次 ÷ 5 餘 0 或 1」那幾軸的取整邊界 —— 誤差正是從那裡來的。',
     exact: '完全不放寬（cg-pet-calc 的作法）。野寵等級一高常常直接無解。',

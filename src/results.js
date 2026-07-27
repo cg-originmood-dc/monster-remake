@@ -21,13 +21,22 @@
 // 明細沒有整個拿掉，是因為它真的有用（想看某一組完整的加點就得靠它），
 // 而且它有 200 筆上限、原程式沒有這個概念 —— 標成附錄比假裝它是主角誠實。
 
+import { useState } from 'preact/hooks';
 import { html, Panel, Btn } from './ui.js';
+import { modeName } from './panels.js';
 import { ProbabilityQuery } from './probability.js';
+import { MoreInfo } from './refine.js';
 
 const AXIS = ['體', '力', '防', '敏', '魔'];
 
 /** 推算結果：逐軸邊際分布（原程式的答案）＋ 候選明細（附錄）。 */
 export const GuessResults = ({ resp, constants }) => {
+    // hooks 不能擺在早退後面，所以這兩行一定要跑得到。
+    const [refined, setRefined] = useState(null);
+    // 篩選結果綁在**它篩的那一次推算**上 —— `resp` 一換，上一次的結果同一拍就失效。
+    // 用 effect 去清會慢一拍，那一拍會拿舊候選畫在新推算的標題底下。
+    const fresh = refined?.of === resp ? refined.out : null;
+
     if (!resp) return null;
     if (resp.total === 0) {
         return html`
@@ -42,22 +51,38 @@ export const GuessResults = ({ resp, constants }) => {
         `;
     }
 
-    const d = resp.distribution;
+    // 填過「輸入更多資訊」之後，底下每一塊講的都是**倖存的那批候選**
+    // —— 原程式也是這樣（`setzjsx` 篩完就地重畫），不是另開一個結果區。
+    const shown = fresh?.result ?? resp;
+    const cut = fresh != null && fresh.result.total !== fresh.before;
+    const d = shown.distribution;
     return html`
         <${Panel} title="推算結果" className="result-panel">
             <div class="result-head">
-                <span class="chip">共 ${resp.total} 組解</span>
-                <span class="chip">可配點數 ${resp.point}</span>
-                <span class="chip">比對 ${modeName(resp.mode)}</span>
+                <span class="chip">共 ${shown.total} 組解</span>
+                <span class="chip">可配點數 ${shown.point}</span>
+                <span class="chip">比對 ${modeName(shown.mode)}</span>
                 ${d?.lost_total_range && html`<span class="chip">總掉檔 ${rangeText(d.lost_total_range)}</span>`}
                 ${d?.fully_determined && html`<span class="chip good">唯一解</span>`}
+                ${
+                    cut &&
+                    html`<span
+                        class="chip cut"
+                        title="百分比已對倖存的候選重新正規化；這裡的數字是它們在篩選前佔的比重"
+                    >
+                        ${`已篩掉 ${fresh.before - shown.total} 組（留下的原本佔 ${fresh.kept_percent.toFixed(2)}%）`}
+                    </span>`
+                }
             </div>
+
+            <${MoreInfo} resp=${resp} constants=${constants} out=${fresh}
+                onResult=${(out) => setRefined({ of: resp, out })} />
 
             ${d && html`<${Marginals} d=${d} constants=${constants} />`}
 
             <details class="detail-block">
                 <summary>
-                    候選明細（${resp.candidates.length} 組${resp.truncated ? '，已截斷' : ''}）
+                    候選明細（${shown.candidates.length} 組${shown.truncated ? '，已截斷' : ''}）
                     <span class="sub-note">原程式沒有這一塊 —— 移植版加的</span>
                 </summary>
                 <div class="table-wrap">
@@ -80,7 +105,7 @@ export const GuessResults = ({ resp, constants }) => {
                             </tr>
                         </thead>
                         <tbody>
-                            ${resp.candidates.map(
+                            ${shown.candidates.map(
                                 (c, i) => html`
                                     <tr key=${i} class=${c.approximate ? 'approx' : ''}>
                                         <td
@@ -115,21 +140,21 @@ export const GuessResults = ({ resp, constants }) => {
                     </table>
                 </div>
                 ${
-                    resp.truncated &&
+                    shown.truncated &&
                     html`<p class="hint">
-                        只列前 ${resp.candidates.length} 組。上面的機率分布是對**全部
-                        ${resp.total} 組**加權統計的，不受這個上限影響。
+                        只列前 ${shown.candidates.length} 組。上面的機率分布是對**全部
+                        ${shown.total} 組**加權統計的，不受這個上限影響。
                     </p>`
                 }
                 ${
-                    resp.candidates.some((c) => c.approximate) &&
+                    shown.candidates.some((c) => c.approximate) &&
                     html`<p class="hint">
                         ＊ 是靠放寬取整邊界才命中的（原程式獨有的機制，見 CLAUDE.md §3.4）。
                         ${
                             // 放寬是精確的**超集**，所以沒標星號的那些精確列舉也找得到。
                             // 只有在「全部都是星號」而且沒被截斷時，才敢說精確完全無解
                             // —— 截斷過的話看不到的那 N 組裡可能就有精確解。
-                            !resp.truncated && resp.candidates.every((c) => c.approximate)
+                            !shown.truncated && shown.candidates.every((c) => c.approximate)
                                 ? '這組觀測值精確列舉推不出任何解。'
                                 : '沒標星號的那些精確列舉也找得到。'
                         }
@@ -137,14 +162,15 @@ export const GuessResults = ({ resp, constants }) => {
                 }
             </details>
 
-            <${ProbabilityQuery} resp=${resp} constants=${constants} />
+            ${
+                // ⚠️ 這裡刻意傳**沒篩過的** `resp`：`api.probability` 掃的是引擎裡那份
+                // 完整候選（見 `probability.js` 檔頭），跟「輸入更多資訊」篩出來的子集
+                // 是兩回事。傳 `shown` 進去只會讓「依 N 組候選加權」那行對不上它算的東西。
+                html`<${ProbabilityQuery} resp=${resp} constants=${constants} />`
+            }
         <//>
     `;
 };
-
-/** 標籤要跟側欄的 `MATCH_MODES` 一致，不然同一個模式在兩個地方會叫不同名字。 */
-const modeName = (m) =>
-    ({ auto: '自動', exact: '精確', observer: '魔觀', tolerant: '寬鬆' })[m] ?? m;
 
 /**
  * 逐軸的邊際機率 —— **這就是原程式的推算輸出**（`showdet`）。
@@ -459,13 +485,15 @@ export const SeriesTable = ({ rows, constants }) => {
 /**
  * 主視窗底下那排即時算出來的能力值 ＋ 逐軸 BP。
  *
- * ⭐ **逐軸 BP 那排是後補的。** 先前只印 `總BP`，而總和是**對不回遊戲的** ——
- * 遊戲的「寵物狀態」視窗顯示的正是這五個數（`體力 8.4 力量 9.4 …`），
- * 原程式的「擴展」頁也有這一排。少了它，使用者要驗算就得自己拆總和。
+ * ⭐ **逐軸 BP 那排是移植版自己加的**，原程式沒有 —— 它的「擴展」頁只有
+ * 入手等級／當前等級／檔次／隨機檔四列，一格 BP 都沒印（截圖對過了）。
  *
- * 小數位取 1 是照遊戲的顯示（原程式那排印的是整數）—— 這格的用途就是拿去跟
- * 遊戲對，跟得比較緊的那個才有用。能力值本身仍然是 `fix()` 取整後的整數，
- * 那條是公式，沒有動。
+ * 加它的理由不是照抄原程式，是**對帳**：先前只印 `總BP`，而總和對不回任何畫面；
+ * 遊戲的「寵物狀態」視窗顯示的正是這五個數（`體力 8.4 力量 9.4 …`），
+ * 所以逐軸那排是唯一能直接跟遊戲比對的東西。
+ *
+ * 小數位取 1 也是照**遊戲**的顯示 —— 這格的用途就是拿去對，跟得緊的才有用。
+ * 能力值本身仍然是 `fix()` 取整後的整數，那條是公式，沒有動。
  */
 export const StatStrip = ({ row, constants }) => {
     if (!row) return null;

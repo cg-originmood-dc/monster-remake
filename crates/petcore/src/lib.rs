@@ -23,9 +23,10 @@ use serde_json::Value;
 use custom::Store;
 use dto::{
     build_guess_resp, forward_row, CatalogDto, Constants, ForwardReq, ForwardRow,
-    GuessReq, GuessResp, PetDto, ProbabilityReq, ProbabilityResp, SearchReq, SearchResp, SeriesReq,
+    GuessReq, GuessResp, PetDto, ProbabilityReq, ProbabilityResp, RefineReq, RefineResp, SearchReq,
+    SearchResp, SeriesReq,
 };
-use petcalc::{Candidate, Distribution, GrowRange};
+use petcalc::{Candidate, Distribution, GrowRange, MatchMode};
 use petdata::{Catalog, Pet};
 
 /// 回傳給前端的解上限。列舉出來的解可能上萬筆，全部丟過去只會塞爆表格；
@@ -145,6 +146,10 @@ impl Library {
 struct GuessCache {
     candidates: Vec<Candidate>,
     dist: Distribution,
+    /// 再篩選時要把結果重建成 [`GuessResp`]，那幾個欄位得跟原本那次一致。
+    catalog: GrowRange,
+    mode: MatchMode,
+    point: i32,
 }
 
 // ── 引擎 ────────────────────────────────────────────────────────────────────
@@ -283,12 +288,35 @@ impl Engine {
         let outcome = petcalc::solve(catalog, req.target.into(), req.into());
         let (resp, dist) = build_guess_resp(catalog, &outcome, MAX_RESULT_ROWS);
 
-        // 留給 probability()。無解時清掉，免得查到上一次的結果。
+        // 留給 probability() 與 refine()。無解時清掉，免得查到上一次的結果。
         self.last_guess = dist.map(|dist| GuessCache {
             candidates: outcome.candidates,
             dist,
+            catalog,
+            mode: outcome.mode,
+            point: outcome.point,
         });
         Ok(resp)
+    }
+
+    /// 推算後的再篩選 —— 原程式的「輸入更多資訊」。
+    ///
+    /// **不重算**：套在最後一次 [`guess`](Self::guess) 留下來的完整候選上，
+    /// 這正是原程式的作法（它同樣只掃已經建好的候選表）。所以補資訊是即時的，
+    /// 不必回頭把幾千組候選再列舉一次。
+    pub fn refine(&self, req: &RefineReq) -> Result<RefineResp, String> {
+        let cache = self
+            .last_guess
+            .as_ref()
+            .ok_or("還沒有推算結果可以篩，先按「計算」")?;
+        Ok(req.eval(
+            cache.catalog,
+            &cache.candidates,
+            &cache.dist,
+            cache.mode,
+            cache.point,
+            MAX_RESULT_ROWS,
+        ))
     }
 
     /// 機率查詢 —— 原程式側欄的機率統計。
@@ -372,6 +400,7 @@ impl Engine {
             "series" => json(&self.series(&req!())?)?,
             "guess" => json(&self.guess(&req!())?)?,
             "probability" => json(&self.probability(&req!())?)?,
+            "refine" => json(&self.refine(&req!())?)?,
             "search_by_stats" => json(&self.search_by_stats(&req!())?)?,
             _ => return Err(format!("沒有「{cmd}」這個指令")),
         };
@@ -875,6 +904,181 @@ mod tests {
         assert!(none["axis_sum"].is_null(), "沒選軸就不該有第二個輸出");
     }
 
+    // ── 再篩選（原程式的「輸入更多資訊」）──────────────────────────────────
+
+    /// 12 格全留空 ＝ 什麼都沒篩，結果必須跟原本那次推算**逐位元相同**。
+    ///
+    /// 這條是整個功能的地基：不填東西就不該有任何行為改變。
+    #[test]
+    fn an_empty_filter_reproduces_the_guess_verbatim() {
+        let (e, resp) = sample_guess("observer");
+        let out = e.dispatch_ref("refine", j!({ "req": {} })).unwrap();
+
+        assert_eq!(out["result"], resp, "留空的篩選改動了結果");
+        assert_eq!(out["before"], resp["total"]);
+        assert!(
+            (out["kept_percent"].as_f64().unwrap() - 100.0).abs() < 0.01,
+            "沒篩掉東西，保留比例該是 100%：{}",
+            out["kept_percent"]
+        );
+    }
+
+    /// 一隻掉了檔的野寵：圖鑑 27/16/25/15/37，實際 25/14/23/13/35。
+    ///
+    /// `sample_guess` 那組沒掉檔、候選只差在隨機檔，12 欄裡幾乎每欄都已經確定
+    /// —— 那是測不出「再篩選」的。這一組才有東西可以問。
+    fn wild_guess(lvl: i32) -> (Engine, Value) {
+        let mut e = engine();
+        let row = e
+            .dispatch(
+                "forward",
+                j!({ "req": {
+                    "grow": {"hp":25,"atk":14,"def":23,"agi":13,"mp":35,"bprate":0.2},
+                    "lvl": lvl, "random": [1,3,2,2,2], "mode": "none",
+                    "manual": [0,0,0,0,0], "not_order_point": 0, "burst": null
+                }}),
+            )
+            .unwrap();
+        let s = &row["stat"];
+        let resp = e
+            .dispatch(
+                "guess",
+                j!({ "req": {
+                    "grow": {"hp":27,"atk":16,"def":25,"agi":15,"mp":37,"bprate":0.2},
+                    "target": {"lvl":lvl,"hp":s["hp"],"mp":s["mp"],"atk":s["atk"],
+                               "def":s["def"],"agi":s["agi"]},
+                    "not_order_point": lvl - 1, "calc_mode": "wild", "manual": null,
+                    "catch_stat": null, "mode": "observer", "exhaustive": true,
+                    "tolerance": null, "target_grow": null, "limit": 0
+                }}),
+            )
+            .unwrap();
+        (e, resp)
+    }
+
+    /// ⭐ 精神是這 12 格**真的問得出新東西**的證據。
+    ///
+    /// 推算的輸入只有五項能力（[`TargetDto`] 沒有精神／回復），所以候選之間
+    /// 精神是會變的 —— 使用者補上這一格就能砍掉解。這正是原程式那一步的用途，
+    /// 也是「為什麼不是把約束全塞在算之前就好」的答案。
+    #[test]
+    fn the_wisdom_column_is_information_the_query_never_had() {
+        let (e, resp) = wild_guess(60);
+        assert!(resp["total"].as_u64().unwrap() > 1, "只有一組解，測不出篩選");
+
+        let before = e.dispatch_ref("refine", j!({ "req": {} })).unwrap();
+        assert!(
+            before["settled"]["stat"][5].is_null(),
+            "這個案例的精神已經確定了，換一個案例來測：{}",
+            before["settled"]
+        );
+
+        let wis = resp["candidates"][0]["stat"]["wis"].as_i64().unwrap();
+        let out = e
+            .dispatch_ref(
+                "refine",
+                j!({ "req": { "stat": [null,null,null,null,null,wis,null] } }),
+            )
+            .unwrap();
+        let kept = out["result"]["total"].as_u64().unwrap();
+        assert!(kept > 0, "拿候選自己的精神去篩，不該篩到空的");
+        assert!(kept < resp["total"].as_u64().unwrap(), "精神沒篩掉任何東西");
+
+        // 篩完之後精神必然「已確定」—— 就是剛剛填進去的那個值。
+        assert_eq!(out["settled"]["stat"][5].as_i64(), Some(wis));
+        // 保留比例是倖存候選原本權重的總和，不是筆數比例。
+        let want: f64 = resp["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["stat"]["wis"].as_i64() == Some(wis))
+            .map(|c| c["percent"].as_f64().unwrap())
+            .sum();
+        assert!(
+            (out["kept_percent"].as_f64().unwrap() - want).abs() < 1e-9,
+            "保留比例對不上：{} vs {want}",
+            out["kept_percent"]
+        );
+    }
+
+    /// 12 欄全確定 ＝ 原程式收工、不再追問的那一刻。
+    ///
+    /// 用「把 12 格全照某一組候選填滿」來構造那個狀態，而不是去找一個剛好
+    /// 一步到位的案例 —— 後者換個等級就不成立，前者對任何案例都成立。
+    #[test]
+    fn every_column_settling_is_how_the_questions_end() {
+        let (e, resp) = wild_guess(60);
+        let c = &resp["candidates"][0];
+        let s = &c["stat"];
+        let out = e
+            .dispatch_ref(
+                "refine",
+                j!({ "req": {
+                    "stat": [s["hp"], s["mp"], s["atk"], s["def"], s["agi"], s["wis"], s["res"]],
+                    "grow": c["grow"]
+                }}),
+            )
+            .unwrap();
+        assert_eq!(
+            out["settled"]["all"].as_bool(),
+            Some(true),
+            "12 格都填滿了還說沒定下來：{}",
+            out["settled"]
+        );
+        // `all` 為真時，12 欄一格都不能是 null —— 不然畫面會說「問完了」卻還留著空格。
+        for col in out["settled"]["stat"].as_array().unwrap() {
+            assert!(!col.is_null());
+        }
+        for col in out["settled"]["grow"].as_array().unwrap() {
+            assert!(!col.is_null());
+        }
+    }
+
+    /// `settled` 說某欄確定，就必須真的是所有倖存候選都同一個值 ——
+    /// 期望值由掃描算出來，不是寫死的。
+    #[test]
+    fn a_column_is_settled_exactly_when_every_survivor_agrees() {
+        let (e, _) = sample_guess("observer");
+        let out = e.dispatch_ref("refine", j!({ "req": {} })).unwrap();
+        let cands = out["result"]["candidates"].as_array().unwrap();
+        assert!(!out["result"]["truncated"].as_bool().unwrap(), "被截斷就不能拿列表當全集");
+
+        for (col, key) in ["hp", "mp", "atk", "def", "agi", "wis", "res"].iter().enumerate() {
+            let vals: Vec<i64> = cands.iter().map(|c| c["stat"][key].as_i64().unwrap()).collect();
+            let uniform = vals.iter().all(|v| *v == vals[0]).then_some(vals[0]);
+            assert_eq!(out["settled"]["stat"][col].as_i64(), uniform, "能力第 {col} 欄");
+        }
+        for axis in 0..petcalc::AXES {
+            let vals: Vec<i64> = cands
+                .iter()
+                .map(|c| c["grow"][axis].as_i64().unwrap())
+                .collect();
+            let uniform = vals.iter().all(|v| *v == vals[0]).then_some(vals[0]);
+            assert_eq!(out["settled"]["grow"][axis].as_i64(), uniform, "檔次第 {axis} 軸");
+        }
+    }
+
+    /// 篩到空的要老實說空，**不可以**順勢報告「12 欄全確定」——
+    /// 那會讓畫面把「條件互斥」演成「問完了」。
+    #[test]
+    fn filtering_everything_away_is_not_the_same_as_being_done() {
+        let (e, _) = sample_guess("observer");
+        let out = e
+            .dispatch_ref("refine", j!({ "req": { "stat": [999999,null,null,null,null,null,null] } }))
+            .unwrap();
+        assert_eq!(out["result"]["total"].as_u64(), Some(0));
+        assert_eq!(out["settled"]["all"].as_bool(), Some(false));
+        assert_eq!(out["kept_percent"].as_f64(), Some(0.0));
+        assert!(out["result"]["distribution"].is_null(), "沒有候選就不該有分布");
+    }
+
+    /// 沒推算過就篩 —— 回錯，不是回空的。
+    #[test]
+    fn refining_before_guessing_is_an_error() {
+        let e = engine();
+        assert!(e.dispatch_ref("refine", j!({ "req": {} })).is_err());
+    }
+
     /// 機率必須用**全部**候選算，不是回傳給前端的那一頁。
     ///
     /// 這條就是 `probability` 得留在後端、不能在前端拿 `resp.candidates`
@@ -924,6 +1128,10 @@ mod tests {
                 "probability" => {
                     let req = serde_json::from_value(args["req"].clone()).unwrap();
                     json(&self.probability(&req)?)
+                }
+                "refine" => {
+                    let req = serde_json::from_value(args["req"].clone()).unwrap();
+                    json(&self.refine(&req)?)
                 }
                 _ => unreachable!("dispatch_ref 只給唯讀指令用"),
             }

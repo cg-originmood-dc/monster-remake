@@ -916,6 +916,12 @@ body {
     border-color: var(--good);
     color: var(--good);
 }
+/* 「輸入更多資訊」砍掉了一些候選 —— 提醒同一塊面板底下的數字已經不是全集了。 */
+.chip.cut {
+    background: #dce6f2;
+    border-color: #6d8fb8;
+    color: #2f4d75;
+}
 .empty {
     padding: 14px;
     text-align: center;
@@ -1197,6 +1203,59 @@ table.grid td.lost {
 }
 .detail-block .table-wrap {
     margin-top: 6px;
+}
+
+/* 輸入更多資訊（推算後的再篩選）—— 原程式算完之後回過頭來追問的那一段。
+ * 底線用實線而不是機率查詢那條虛線：它改的是**上下文**（下面每一塊都跟著變），
+ * 不像機率查詢只是在旁邊多算一個數。 */
+.more-info {
+    margin: 6px 0 8px;
+    padding: 6px 8px;
+    background: var(--paper-hi);
+    border: 1px solid var(--edge-soft);
+    border-radius: 5px;
+}
+.more-info h4 {
+    margin: 0 0 4px;
+    font-size: 12px;
+    letter-spacing: 1px;
+}
+.more-info h4 .sub-note {
+    margin-left: 6px;
+    font-size: 10px;
+    font-weight: 400;
+    letter-spacing: 0;
+    color: var(--ink-dim);
+}
+.more-info .row {
+    margin: 0;
+}
+/* 已確定的欄位。原程式是把那格 `Enabled` 設成 false —— Delphi 的 disabled TEdit
+ * 是**淺底灰字**，不是繼續當一條深色凹槽，所以這裡整格翻成淺色而不是只調透明度。
+ *
+ * 沿用預設的 `.field:disabled { opacity: .45 }` 試過了：深底 ＋ 半透明的字，
+ * 那個數字幾乎看不見 —— 而它是推算的答案，看不清楚就等於白確定了。 */
+.more-info .field:disabled {
+    opacity: 1;
+    color: var(--teal-ink);
+    background: var(--paper-lo);
+    border-color: var(--edge);
+    border-style: dashed;
+    font-weight: 700;
+}
+.more-info.skipped {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.more-info .mi-k {
+    font-size: 12px;
+    letter-spacing: 1px;
+}
+.more-info .mi-note {
+    font-size: 11px;
+    color: var(--ink-dim);
+    margin-right: auto;
 }
 
 /* 機率查詢 */

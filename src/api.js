@@ -172,6 +172,15 @@ export const guess = (req) => invoke('guess', { req });
  */
 export const probability = (req) => invoke('probability', { req });
 
+/**
+ * 推算後的再篩選（原程式的「輸入更多資訊」）—— 12 個框：7 欄能力 ＋ 5 欄檔次。
+ *
+ * 跟 [`probability`] 一樣掃**最後一次 [`guess`]** 的完整候選，而且**不重算**：
+ * 原程式也是這樣，候選表已經建好了，補資訊只是再掃一遍把不合的砍掉。
+ * 所以邊填邊看是即時的，不必等好幾秒重推一次。
+ */
+export const refine = (req) => invoke('refine', { req });
+
 /** 寵物搜尋（原程式主視窗的寵物搜尋面板）：找出在指定等級補得到這組能力的寵物。 */
 export const searchByStats = (req) => invoke('search_by_stats', { req });
 
