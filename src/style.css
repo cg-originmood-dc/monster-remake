@@ -1238,6 +1238,21 @@ table.grid td.lost {
  * 那一欄整個從畫面上消失，不是留在那裡變灰。現在由 `refine.js` 決定畫哪幾格，
  * CSS 這邊什麼都不用做。 */
 
+/* ⭐ 那 12 格是**下拉**，用的就是加點／暴點那顆同款（`.field.pick`）。
+ * 原程式的控制項只交出「選了第幾項」與「我是第幾欄」，值是拿這兩個編號查表來的
+ * —— 整條路徑上沒有任何解析文字的地方，所以這裡也不該是輸入框。
+ * 寬度比預設的 pick 窄：一排五個要排得下，而選項都是兩三位數。 */
+.more-info .axis-boxes .field.pick {
+    width: 52px;
+    padding: 2px 17px 2px 4px;
+    text-align: center;
+    font-family: var(--mono);
+}
+/* 底下那排軸名預設是 40px（配數字格），下拉比較寬，不跟著改就會逐格偏掉。 */
+.more-info .axis-names span {
+    width: 52px;
+}
+
 /* 篩到 0 組時，剛動的那一格標籤變成「選錯」（原程式寫死的那兩個字）。 */
 .more-info .axis-names .wrong {
     color: var(--bad);

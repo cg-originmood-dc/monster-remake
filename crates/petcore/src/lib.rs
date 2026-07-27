@@ -417,6 +417,7 @@ mod tests {
     use super::*;
     use serde_json::json as j;
     use std::cell::RefCell;
+    use std::collections::BTreeSet;
     use std::rc::Rc;
 
     /// 記憶體版的 [`Store`]，行為跟 localStorage 一樣。共用一份 `Rc` 是為了
@@ -1005,21 +1006,29 @@ mod tests {
     ///
     /// ⭐ **那 12 欄是精神／回復 ＋ BP 五軸 ＋ 檔次五軸**，不含生命 魔力 攻擊
     /// 防禦 敏捷 —— 那五格是推算的輸入，原程式從來沒問過（見 [`RefineReq`]）。
-    /// 這條測試就填那 12 格，不碰前五格；`all` 若還把它們算進去就會紅。
     ///
-    /// 用「照某一組候選填滿」來構造收工狀態，而不是去找一個剛好一步到位的案例
-    /// —— 後者換個等級就不成立，前者對任何案例都成立。
+    /// 照某一組候選把 12 格填滿就一定收工 —— 這件事成立是因為**篩選與「已確定」
+    /// 走同一把尺（`Trunc`）**：填進去的值把倖存集夾成「這 12 欄都跟你填的一樣」，
+    /// 判斷一致時比的又是同一個量。哪一把尺歪掉，這條就會紅。
+    ///
+    /// ⚠️ 倖存的不見得只有一組（BP 小數不同的同伴會一起留下），但那不影響收工。
     #[test]
     fn every_column_settling_is_how_the_questions_end() {
         let (e, resp) = wild_guess(60);
         let c = &resp["candidates"][0];
         let s = &c["stat"];
+        let bp: Vec<i64> = c["bp"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap().trunc() as i64)
+            .collect();
         let out = e
             .dispatch_ref(
                 "refine",
                 j!({ "req": {
                     "stat": [null, null, null, null, null, s["wis"], s["res"]],
-                    "bp": c["bp"],
+                    "bp": bp,
                     "grow": c["grow"]
                 }}),
             )
@@ -1045,25 +1054,35 @@ mod tests {
     /// BP 是這一排最有力的篩選條件 —— 它把加點與隨機檔分得很開，
     /// 而且遊戲的「寵物狀態」視窗直接印這五個數，使用者抄得到。
     ///
-    /// ⚠️ 比對走的是 ±0.05（＝ 遊戲那一位小數的半格），不是逐位相同：
-    /// 拿候選自己的 BP **四捨五入到一位小數**再填回去，仍然要篩得到它。
-    /// 這正是使用者實際會做的事。
+    /// ⚠️ **這一格收的是整數。** 原程式那 12 個框都是 `int`，比對時把候選的值
+    /// `Trunc` 成 Int64 再比；BP 是 12 欄裡唯一的小數，所以問的是整數部分。
+    /// 期望留下來的筆數由**掃全部候選**算出來，不是寫死的。
     #[test]
-    fn the_bp_column_survives_being_read_off_the_game_at_one_decimal() {
+    fn the_bp_column_asks_for_the_truncated_integer_like_the_original() {
         let (e, resp) = wild_guess(60);
-        let c = &resp["candidates"][0];
-        let rounded: Vec<f64> = c["bp"]
-            .as_array()
-            .unwrap()
+        let cands = resp["candidates"].as_array().unwrap();
+        assert!(!resp["truncated"].as_bool().unwrap(), "被截斷就不能拿列表當全集");
+
+        let trunc = |v: &Value| v.as_f64().unwrap().trunc() as i64;
+        let want: Vec<i64> = cands[0]["bp"].as_array().unwrap().iter().map(trunc).collect();
+        let out = e.dispatch_ref("refine", j!({ "req": { "bp": want } })).unwrap();
+
+        let expect = cands
             .iter()
-            .map(|v| (v.as_f64().unwrap() * 10.0).round() / 10.0)
-            .collect();
-        let out = e
-            .dispatch_ref("refine", j!({ "req": { "bp": rounded } }))
-            .unwrap();
-        let kept = out["result"]["total"].as_u64().unwrap();
-        assert!(kept > 0, "把候選自己的 BP 抄成一位小數填回去，卻篩到空的");
-        assert!(kept < resp["total"].as_u64().unwrap(), "BP 沒篩掉任何東西，測不出效果");
+            .filter(|c| c["bp"].as_array().unwrap().iter().map(trunc).eq(want.iter().copied()))
+            .count();
+        assert_eq!(out["result"]["total"].as_u64(), Some(expect as u64));
+        assert!(expect < cands.len(), "BP 沒篩掉任何東西，測不出效果");
+        // 整數部分相同、小數不同的候選要留得下來，不然這欄就變成在比小數了。
+        let fractional = cands
+            .iter()
+            .filter(|c| c["bp"].as_array().unwrap().iter().map(trunc).eq(want.iter().copied()))
+            .any(|c| c["bp"] != cands[0]["bp"]);
+        assert!(fractional && expect > 1, "這個案例挑不出小數不同的同伴，測不出效果");
+
+        // 這一格根本收不了小數 —— 原程式那 12 個框是 `int`，不是「填了小數會被忽略」。
+        let err = e.dispatch_ref("refine", j!({ "req": { "bp": [8.4, null, null, null, null] } }));
+        assert!(err.is_err(), "BP 那格收下了小數 —— 原程式那個框是 int");
     }
 
     /// `settled` 說某欄確定，就必須真的是所有倖存候選都同一個值 ——
@@ -1088,9 +1107,53 @@ mod tests {
             let uniform = vals.iter().all(|v| *v == vals[0]).then_some(vals[0]);
             assert_eq!(out["settled"]["grow"][axis].as_i64(), uniform, "檔次第 {axis} 軸");
 
-            let bps: Vec<f64> = cands.iter().map(|c| c["bp"][axis].as_f64().unwrap()).collect();
-            let uniform = bps.iter().all(|v| (v - bps[0]).abs() < 0.05).then_some(bps[0]);
-            assert_eq!(out["settled"]["bp"][axis].as_f64(), uniform, "BP 第 {axis} 軸");
+            // BP 這一欄「已確定」跟篩選是同一把尺：比 `Trunc` 之後的整數。
+            let bps: Vec<i64> = cands
+                .iter()
+                .map(|c| c["bp"][axis].as_f64().unwrap().trunc() as i64)
+                .collect();
+            let uniform = bps.iter().all(|v| *v == bps[0]).then_some(bps[0]);
+            assert_eq!(out["settled"]["bp"][axis].as_i64(), uniform, "BP 第 {axis} 軸");
+        }
+    }
+
+    /// ⭐ 那 12 格在原程式裡是**下拉**，選項必須剛好是倖存候選在該欄的相異值。
+    ///
+    /// 少列一個，正確答案就選不到；多列一個，選了必然篩到空 ——
+    /// 兩種都會讓面板變成不能用，所以這條掃全集逐欄比對集合。
+    /// 順帶釘住「只剩一個選項 ⇔ 那一欄已確定」，`settled` 就是這樣導出來的。
+    #[test]
+    fn the_dropdown_lists_exactly_the_values_the_survivors_take() {
+        let (e, _) = wild_guess(60);
+        let out = e.dispatch_ref("refine", j!({ "req": {} })).unwrap();
+        let cands = out["result"]["candidates"].as_array().unwrap();
+        assert!(!out["result"]["truncated"].as_bool().unwrap(), "被截斷就不能拿列表當全集");
+
+        let check = |got: &Value, want: BTreeSet<i64>, who: &str| {
+            let got: Vec<i64> = got.as_array().unwrap().iter().map(|v| v.as_i64().unwrap()).collect();
+            assert!(got.windows(2).all(|w| w[0] < w[1]), "{who} 的選項沒有遞增排序：{got:?}");
+            assert_eq!(got, want.into_iter().collect::<Vec<_>>(), "{who} 的選項對不上倖存候選");
+        };
+        for (col, key) in ["hp", "mp", "atk", "def", "agi", "wis", "res"].iter().enumerate() {
+            let want = cands.iter().map(|c| c["stat"][key].as_i64().unwrap()).collect();
+            check(&out["options"]["stat"][col], want, &format!("能力第 {col} 欄"));
+        }
+        for axis in 0..petcalc::AXES {
+            let want = cands
+                .iter()
+                .map(|c| c["bp"][axis].as_f64().unwrap().trunc() as i64)
+                .collect();
+            check(&out["options"]["bp"][axis], want, &format!("BP 第 {axis} 軸"));
+            let want = cands.iter().map(|c| c["grow"][axis].as_i64().unwrap()).collect();
+            check(&out["options"]["grow"][axis], want, &format!("檔次第 {axis} 軸"));
+        }
+
+        // 只剩一個選項 ⇔ 已確定。兩份資料講的必須是同一件事。
+        for kind in ["stat", "bp", "grow"] {
+            for (i, opts) in out["options"][kind].as_array().unwrap().iter().enumerate() {
+                let one = opts.as_array().unwrap().len() == 1;
+                assert_eq!(!out["settled"][kind][i].is_null(), one, "{kind} 第 {i} 欄");
+            }
         }
     }
 
@@ -1181,16 +1244,19 @@ mod tests {
 
     impl Engine {
         /// 只讀的派送，給測試用 —— `probability` 不改狀態，但 `dispatch` 要 `&mut`。
+        ///
+        /// 解不開參數要跟 [`Engine::dispatch`] 一樣回 `Err` 而不是 panic ——
+        /// 「這一格收不了小數」也是要測的行為之一。
         fn dispatch_ref(&self, cmd: &str, args: Value) -> Result<Value, String> {
+            macro_rules! req {
+                () => {
+                    serde_json::from_value(args["req"].clone())
+                        .map_err(|e| format!("「{cmd}」的 req 看不懂：{e}"))?
+                };
+            }
             match cmd {
-                "probability" => {
-                    let req = serde_json::from_value(args["req"].clone()).unwrap();
-                    json(&self.probability(&req)?)
-                }
-                "refine" => {
-                    let req = serde_json::from_value(args["req"].clone()).unwrap();
-                    json(&self.refine(&req)?)
-                }
+                "probability" => json(&self.probability(&req!())?),
+                "refine" => json(&self.refine(&req!())?),
                 _ => unreachable!("dispatch_ref 只給唯讀指令用"),
             }
         }

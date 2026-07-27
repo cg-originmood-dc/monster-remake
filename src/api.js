@@ -173,7 +173,11 @@ export const guess = (req) => invoke('guess', { req });
 export const probability = (req) => invoke('probability', { req });
 
 /**
- * 推算後的再篩選（原程式的「輸入更多資訊」）—— 12 個框：7 欄能力 ＋ 5 欄檔次。
+ * 推算後的再篩選（原程式的「輸入更多資訊」）—— 12 個**下拉**：
+ * 精神 回復 ｜ 逐軸 BP ×5 ｜ 檔次 ×5。生命／魔力／攻擊／防禦／敏捷是推算的
+ * **輸入**，原程式沒問過（哪一組是哪個怎麼分辨，見 `petcore::dto::RefineReq`）。
+ * ⚠️ 三組**全部是整數** —— 原程式那 12 個 slot 是 `int`，BP 比的是 `Trunc` 之後的值。
+ * 選項清單由回應的 `options` 給（見 `petcore::dto::RefineOptions`）。
  *
  * 跟 [`probability`] 一樣掃**最後一次 [`guess`]** 的完整候選，而且**不重算**：
  * 原程式也是這樣，候選表已經建好了，補資訊只是再掃一遍把不合的砍掉。

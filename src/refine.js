@@ -19,16 +19,28 @@
 // 兩欄能力、五欄 BP、五欄檔次（哪一組是哪個由比對方式分辨，說明在
 // `petcore::dto::RefineReq`）。血魔攻防敏是推算的**輸入**，問了也篩不掉東西。
 //
-// 另外三件事也照抄了：
+// ## ⭐ 那 12 個是**下拉**，不是輸入框
 //
-// | 原程式的行為                       | 這裡                                       |
-// | ---------------------------------- | ------------------------------------------ |
-// | 已確定的欄位連同標籤**隱藏**       | 不再畫那一格（先前是變灰，那是看錯了）     |
-// | 篩到 0 組 → 該格的標籤變成「選錯」 | 同（先前是底下一行紅字）                   |
-// | 一開始就只有一個值的欄位不會被問   | 同（拿第一次未篩的結果當基準）             |
+// 這件事先前也弄錯了。原程式那 12 個控制項的值不是從文字解析來的：它們只交出
+// 「你選了第幾項」與「我是第幾欄」兩個編號，值是拿這兩個編號去查一張 `int` 表。
+// 旁證有兩個 —— 篩到 0 組時標籤變成「**選**錯」（不是「填錯」），以及
+// 「一開始就只有一個值的欄位根本不建控制項」這個行為需要程式先知道每欄有哪些
+// 相異值。選項內容由 `RefineOptions` 給，就是倖存候選在該欄的相異值。
+//
+// 改成下拉之後，「BP 那格要填整數還是小數」這個問題自己消失了 ——
+// 使用者選的是程式列出來的值，而列出來的就是比對用的那個量（`Trunc` 後的整數）。
+//
+// 一起照抄的還有：
+//
+// | 原程式的行為                       | 這裡                                     |
+// | ---------------------------------- | ---------------------------------------- |
+// | 12 個都是下拉，選項是候選的相異值  | `<select>`，選項來自 `options`           |
+// | 已確定的欄位連同標籤**隱藏**       | 不再畫那一格（先前是變灰，那是看錯了）   |
+// | 篩到 0 組 → 該格的標籤變成「選錯」 | 同（先前是底下一行紅字）                 |
+// | 一開始就只有一個值的欄位不會被問   | 同（拿第一次未篩的結果當基準）           |
 //
 // 「使用者碰過的格子永遠留著」也是原程式的：它在每次 OnChange 都把該欄標成
-// 「已作答」，之後就不再隱藏 —— 這樣打錯字才有得改。
+// 「已作答」，之後就不再隱藏 —— 這樣選錯了才有得改。
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 import * as api from './api.js';
@@ -38,9 +50,9 @@ const BLANK7 = [null, null, null, null, null, null, null];
 const BLANK5 = [null, null, null, null, null];
 
 /**
- * 原程式那 12 個框，順序與標籤逐字照抄。
+ * 原程式那 12 個下拉，順序與標籤逐字照抄。
  *
- * `kind` 決定送到哪個欄位、怎麼解析；`slot` 是該欄位裡的索引。
+ * `kind` 決定送到哪個欄位、選項從哪一組來；`slot` 是該欄位裡的索引。
  * 能力只有精神（5）與回復（6）——原程式沒問前五格。
  */
 const columns = (constants) => [
@@ -59,13 +71,14 @@ const columns = (constants) => [
         slot: i,
         label,
         group: '檔次',
-        max: constants.max_tier,
     })),
 ];
 
+// BP 那一組列的是**整數部分**（比對就是把候選的 BP `Trunc` 之後比），
+// 提示要講清楚，不然對著遊戲那排一位小數會不知道該挑哪個。
 const GROUPS = [
     ['能力', '遊戲看得到，推算沒用過的兩項'],
-    ['BP', '寵物狀態視窗那一排'],
+    ['BP', '寵物狀態視窗那一排，選小數點前面的整數'],
     ['檔次', '知道實際檔次的話'],
 ];
 
@@ -86,6 +99,8 @@ export const MoreInfo = ({ resp, constants, out, onResult, onNarrow }) => {
     // 原程式是在建問題時就決定的（只有多於一個值的欄位才會被建出來），
     // 一旦定下來就不會因為後來篩窄了而多冒出新問題。
     const baseline = useRef(null);
+    // 每一欄下拉裡的選項，同樣在建控制項那一刻定下來。
+    const choices = useRef(null);
     const seq = useRef(0);
     // 上一次寫回側欄的掉檔範圍，用來擋掉重複的寫入（見底下那個 effect）。
     const pushed = useRef(null);
@@ -100,6 +115,7 @@ export const MoreInfo = ({ resp, constants, out, onResult, onNarrow }) => {
         setSkipped(false);
         setErr(null);
         baseline.current = null;
+        choices.current = null;
         pushed.current = null;
         setGen((g) => g + 1);
     }, [resp]);
@@ -114,8 +130,11 @@ export const MoreInfo = ({ resp, constants, out, onResult, onNarrow }) => {
             try {
                 const r = await api.refine({ stat, bp, grow });
                 if (mine !== seq.current) return;
-                // 第一次（什麼都沒填）的結果就是「哪幾欄值得問」的基準。
+                // 第一次（什麼都沒填）的結果就是「哪幾欄值得問」與「每欄有哪些
+                // 選項」的基準。原程式也是推算完建一次控制項，之後篩窄了不會
+                // 重建選項，也不會冒出新問題。
                 baseline.current ??= r.settled;
+                choices.current ??= r.options;
                 onResult(r);
                 setErr(null);
             } catch (e) {
@@ -133,7 +152,7 @@ export const MoreInfo = ({ resp, constants, out, onResult, onNarrow }) => {
     //（`上限;下限`，見 CLAUDE.md §4.3）—— 下次按計算就在收窄過的空間裡重推。
     // 值由引擎掃全部倖存候選給（`narrowed_loss`），不是從邊際分布反推的。
     //
-    // ⚠️ **只在使用者真的填過格子之後才寫**。原程式那段掛在輸入框的 OnChange 上，
+    // ⚠️ **只在使用者真的選過之後才寫**。原程式那段掛在下拉的 OnChange 上，
     // 沒動過就不會執行；移植版第一次的空篩選是自己排的（用來問出「哪幾欄值得問」），
     // 那不是使用者的動作，跟著寫回去就會變成「按一下計算，側欄的搜尋範圍就被改掉」。
     const narrow = touched.size > 0 ? out?.narrowed_loss : null;
@@ -167,6 +186,8 @@ export const MoreInfo = ({ resp, constants, out, onResult, onNarrow }) => {
     const cols = columns(constants);
     const valueOf = (c) => ({ stat, bp, grow })[c.kind][c.slot];
     const settledOf = (c) => settled?.[c.kind]?.[c.slot];
+    // 選項在建控制項那一刻定下來，不隨後續篩選變動（原程式也是建一次）。
+    const optionsOf = (c) => choices.current?.[c.kind]?.[c.slot] ?? [];
 
     // 一開始就唯一的欄位不列（原程式連控制項都不會顯示）；
     // 之後變成唯一的就藏起來，除非使用者自己碰過那一格。
@@ -196,7 +217,7 @@ export const MoreInfo = ({ resp, constants, out, onResult, onNarrow }) => {
         <div class="more-info">
             <h4>
                 輸入更多資訊
-                <span class="sub-note">知道多少填多少，留空 ＝ 不限。不重算，只把不合的候選砍掉</span>
+                <span class="sub-note">知道多少選多少，留空 ＝ 不限。不重算，只把不合的候選砍掉</span>
             </h4>
 
             ${GROUPS.map(([group, hint]) => {
@@ -208,15 +229,25 @@ export const MoreInfo = ({ resp, constants, out, onResult, onNarrow }) => {
                             <div class="axis-boxes">
                                 ${mine.map(
                                     (c) => html`
-                                        <input
+                                        <select
                                             key=${c.key}
-                                            type="text"
-                                            inputMode=${c.kind === 'bp' ? 'decimal' : 'numeric'}
-                                            class="field num sm"
+                                            class=${`field pick${valueOf(c) == null ? '' : ' on'}`}
                                             title=${hint}
                                             value=${valueOf(c) == null ? '' : String(valueOf(c))}
-                                            onInput=${(e) => change(c, parse(e.currentTarget, c))}
-                                        />
+                                            onChange=${(e) =>
+                                                change(
+                                                    c,
+                                                    e.currentTarget.value === ''
+                                                        ? null
+                                                        : Number(e.currentTarget.value),
+                                                )}
+                                        >
+                                            <option value="">－</option>
+                                            ${optionsOf(c).map(
+                                                (v) =>
+                                                    html`<option key=${v} value=${v}>${v}</option>`,
+                                            )}
+                                        </select>
                                     `,
                                 )}
                             </div>
@@ -235,7 +266,7 @@ export const MoreInfo = ({ resp, constants, out, onResult, onNarrow }) => {
             })}
 
             <${Row} label="">
-                <${Btn} title="清掉填過的格子" disabled=${touched.size === 0} onClick=${clear}>
+                <${Btn} title="清掉選過的格子" disabled=${touched.size === 0} onClick=${clear}>
                     清除
                 <//>
                 <${Btn} title="不再追問，用目前的結果收工" onClick=${skip}>跳過<//>
@@ -252,22 +283,6 @@ export const MoreInfo = ({ resp, constants, out, onResult, onNarrow }) => {
     `;
 };
 
-/**
- * 把輸入框的字轉成數字，留空 ＝ `null`。
- *
- * **不能用 `ui.js` 的 `NumField`** —— 它把空字串當成 `min ?? 0`（那是刻意的，
- * 它的呼叫端沒有「沒填」這個狀態）。這裡「留空」是真的有意義：留空 ＝ 這欄不限，
- * 跟填 0 是兩回事。
- *
- * BP 是小數（遊戲的寵物狀態視窗印一位小數），另外兩種是整數。
- */
-function parse(el, col) {
-    const raw =
-        col.kind === 'bp'
-            ? el.value.trim().replace(/[^\d.]/g, '')
-            : el.value.trim().replace(/[^\d]/g, '');
-    if (raw === '' || raw === '.') return null;
-    const n = Number(raw);
-    if (!Number.isFinite(n)) return null;
-    return col.max == null ? n : Math.min(n, col.max);
-}
+// 不再有解析：12 個都是下拉，值只可能是引擎列出來的那幾個整數，
+// 空字串 ＝ 沒選 ＝ 這欄不限（原程式存 `-1`）。
+// 先前這裡有一個 `parse()` 把非數字剝掉，那是「輸入框」時代的東西。

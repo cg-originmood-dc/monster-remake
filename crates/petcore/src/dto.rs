@@ -9,6 +9,7 @@
 //! 弄混這兩個順序是這個專案最容易踩的坑，所以轉換只發生在本檔案裡。
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 use petcalc::{
     Bp, Candidate, Distribution, GrowRange, GuessOptions, LossBounds, ManualBounds, MatchMode,
@@ -877,9 +878,21 @@ impl ProbabilityReq {
 /// | 標籤   | 精神 | 回復 | 體力 力量 強度 速度 魔法  | 體力 力量 強度 速度 魔法  |
 /// | 是什麼 | 能力 | 能力 | **逐軸 BP**               | **檔次**                  |
 ///
-/// 後面兩組標籤一樣，靠比對方式分辨：8–12 走的是檔次專用的那段 ±容差
-/// （只在 `檔次 mod 5 ∈ {0,1}` 放寬，見 CLAUDE.md §3.4），3–7 走的是
-/// 「把值格式化成字串再比」——**只有 BP 是小數**，所以那條路只可能是 BP。
+/// 後面兩組標籤一樣，靠**比對走哪條路**分辨。原程式的篩選是兩個迴圈：
+/// 前 7 格一圈、後 5 格一圈，候選那邊各對到一段連續的 `double`。
+///
+/// | 欄   | 比對                                                                |
+/// | ---- | ------------------------------------------------------------------- |
+/// | 1–7  | `Trunc(候選值) == 你填的整數`，**沒有容差**                         |
+/// | 8–12 | 同上，但不中時再套檔次專用的那段 ±容差（`檔次 mod 5 ∈ {0,1}`，§3.4）|
+///
+/// 容差那條路只有檔次會用（§3.4 講的就是檔次），所以 8–12 是檔次；
+/// 剩下的 3–7 掛在「體力…魔法」五個標籤下、又不是檔次，只剩逐軸 BP。
+/// 佐證是判斷「這一欄是否已確定」時多出來的那條後路（值的十進位寫法超過
+/// 8 個字元就改比兩位小數）—— 精神／回復是整數、檔次幾乎是整數，
+/// **會長出那種寫法的只有 BP**。
+///
+/// ⚠️ 那條後路移植版**沒有照抄**，見 [`RefineSettled`]。
 ///
 /// ⭐ **生命 魔力 攻擊 防禦 敏捷 五格根本不在問題裡。** 它們是推算的輸入，
 /// 早就被釘死了，問了也篩不掉東西 —— 原程式從一開始就沒把它們列進來。
@@ -902,22 +915,67 @@ pub struct RefineReq {
     /// 少一個維度不會讓它變簡單，而砍掉欄位反而會讓既有的請求變成不合法。
     #[serde(default)]
     pub stat: [Option<i64>; petcalc::STATS],
-    /// 逐軸 BP，軸順序 `[HP, ATK, DEF, AGI, MP]`。
+    /// 逐軸 BP 的**整數部分**，軸順序 `[HP, ATK, DEF, AGI, MP]`。
     ///
-    /// 遊戲的「寵物狀態」視窗直接印這五個數，所以這是使用者**抄得到**的東西，
-    /// 而且它把加點與隨機檔分得很開 —— 是這一排最有力的篩選條件。
+    /// ⚠️ **是整數，不是小數。** 原程式那 12 個框存的都是 `int`（`-1` ＝ 沒填），
+    /// 比對時把候選的值 `Trunc` 成 Int64 再比 —— BP 是這 12 欄裡唯一的小數，
+    /// 所以這一格問的就是「BP 的整數部分是多少」。
+    ///
+    /// 遊戲的「寵物狀態」視窗直接印這五個數，使用者抄得到；而且 BP 把加點與
+    /// 隨機檔分得很開，是這一排最有力的篩選條件。
     #[serde(default)]
-    pub bp: [Option<f64>; AXES],
+    pub bp: [Option<i64>; AXES],
     /// 檔次，BP 軸順序 `[HP, ATK, DEF, AGI, MP]`。
     #[serde(default)]
     pub grow: [Option<i32>; AXES],
 }
 
+/// 每一欄的可選值，遞增排序。**這 12 格在原程式裡是下拉，不是輸入框。**
+///
+/// 依據：那 12 個控制項的值不是從文字解析出來的，而是查一張
+/// 「第幾個選項 × 第幾欄」的 `int` 表 —— 控制項只交出「你選了第幾項」與
+/// 「我是第幾欄」兩個編號。旁證是篩到 0 組時標籤變成「**選**錯」，
+/// 以及「一開始就只有一個值的欄位根本不建控制項」這個行為 ——
+/// 那需要程式先知道每一欄有哪些相異值。
+///
+/// 表的填充碼沒找到，但內容只有一種填法說得通：**倖存候選在該欄的相異值**。
+/// 少列一個值，正確答案就選不到；多列一個值，選了必然篩到空。
+///
+/// ⚠️ **遞增排序是移植版挑的**，原程式的順序沒逆出來。
+#[derive(Debug, Clone, Serialize)]
+pub struct RefineOptions {
+    pub stat: [Vec<i64>; petcalc::STATS],
+    /// 逐軸 BP 的**整數部分**（`Trunc`）—— 篩選比的就是這個量。
+    pub bp: [Vec<i64>; AXES],
+    pub grow: [Vec<i32>; AXES],
+}
+
 /// 每一欄「所有倖存候選是否同一個值」—— 是的話原程式把那格藏起來。
+///
+/// 由 [`RefineOptions`] 導出（`只剩一個選項` ⇔ 已確定），不另外算一份，
+/// 免得兩邊對同一件事講不一樣的話。
+///
+/// ## 跟篩選同一把尺：`Trunc`
+///
+/// 原程式判斷一致與否，主路就是比 `Trunc` 之後的整數 —— 跟 [`RefineReq`]
+/// 那 12 個框比的是同一個東西。這件事讓面板收得了工：你在 BP 那格填了 `8`，
+/// 倖存候選的 `Trunc` 就都是 8，那一欄隨即消失。
+///
+/// ## ⚠️ 有一條後路沒有照抄
+///
+/// 原程式在主路之外還有一條：把值格式化成字串，**寫法超過 8 個字元**時改拿
+/// 「四捨五入到兩位小數」的字串去比。那是給浮點雜訊用的補丁，而且它比主路**嚴**
+/// —— 於是 `93.835` 走主路得到 `93`，`93.83500000000001` 走後路得到 `93.84`，
+/// 兩筆幾乎相同的值會被判成不一致。
+///
+/// 不照抄的理由跟 CLAUDE.md §6.1 最後一條是同一件事：原程式算在 80-bit
+/// `Extended` 上，移植版是 `f64`，**雜訊出現在哪一筆本來就不一樣**。
+/// 照抄等於照抄一個平台相依的隨機行為，不是照抄行為。
 #[derive(Debug, Clone, Serialize)]
 pub struct RefineSettled {
     pub stat: [Option<i64>; petcalc::STATS],
-    pub bp: [Option<f64>; AXES],
+    /// 逐軸 BP 的**整數部分**（`Trunc`），跟 [`RefineReq::bp`] 同一把尺。
+    pub bp: [Option<i64>; AXES],
     pub grow: [Option<i32>; AXES],
     /// **原程式問的那 12 欄**全部確定 —— 它在這一刻收工，不再追問。
     ///
@@ -941,6 +999,9 @@ pub struct RefineResp {
     /// 同一組顯示元件（掉檔組合那張表加起來要是 100% 才看得懂），
     /// 原本那個「還剩多少」的資訊就搬到這個欄位，沒有弄丟。
     pub kept_percent: f64,
+    /// 每一欄的下拉選項。前端只取**第一次（沒篩任何東西）**那份 ——
+    /// 原程式也是推算完建一次控制項，不會因為後來篩窄了就冒出新問題。
+    pub options: RefineOptions,
     pub settled: RefineSettled,
     /// 倖存候選的逐軸掉檔範圍 `[最小, 最大]`，沒有候選時是 `null`。
     ///
@@ -975,7 +1036,8 @@ impl RefineReq {
             }
         }
 
-        let settled = RefineSettled::over(&kept);
+        let options = RefineOptions::over(&kept);
+        let settled = RefineSettled::from(&options);
         let narrowed_loss = narrowed_loss(catalog, &kept);
         let outcome = petcalc::GuessOutcome {
             candidates: kept,
@@ -987,6 +1049,7 @@ impl RefineReq {
             result,
             before: cache.len(),
             kept_percent,
+            options,
             settled,
             narrowed_loss,
         }
@@ -998,7 +1061,7 @@ impl RefineReq {
             return false;
         }
         let bp = c.bp.to_array();
-        if (0..AXES).any(|i| matches!(self.bp[i], Some(w) if !bp_hit(bp[i], w))) {
+        if (0..AXES).any(|i| matches!(self.bp[i], Some(w) if bp[i].trunc() as i64 != w)) {
             return false;
         }
         let grow = c.grow.to_array();
@@ -1027,50 +1090,41 @@ fn narrowed_loss(catalog: GrowRange, kept: &[Candidate]) -> Option<[[i32; 2]; AX
     }))
 }
 
-/// 使用者填的 BP 對不對得上候選的 BP。
-///
-/// 原程式是把兩邊都格式化成字串再比（長度超過 8 才退成兩位小數，那是給
-/// 浮點雜訊用的後路），等於**同一個十進位寫法才算數**。移植版放寬成 ±0.05，
-/// 理由是這一格的值使用者只可能從**遊戲的寵物狀態視窗**抄，而那裡印的是
-/// **一位小數**；BP 本身的最小刻度是 0.005（成長係數表有半階），
-/// 照原程式那樣要求逐位相同的話，抄 `8.4` 進來就對不上真值 `8.415`。
-/// 取半格（0.05）＝ 「你讀到的那個一位小數所代表的區間」，不會比需要的更嚴。
-fn bp_hit(actual: f64, typed: f64) -> bool {
-    (actual - typed).abs() < 0.05
+impl RefineOptions {
+    fn over(kept: &[Candidate]) -> Self {
+        // BP 收的是 `Trunc` 之後的整數 —— 選項要跟篩選比的量一致，
+        // 不然畫面會列出兩個選項、選哪個都留下同一批候選。
+        let mut stat: [BTreeSet<i64>; petcalc::STATS] = Default::default();
+        let mut bp: [BTreeSet<i64>; AXES] = Default::default();
+        let mut grow: [BTreeSet<i32>; AXES] = Default::default();
+        for c in kept {
+            let s = stat_columns(c.stat);
+            for (i, set) in stat.iter_mut().enumerate() {
+                set.insert(s[i]);
+            }
+            let b = c.bp.to_array();
+            let g = c.grow.to_array();
+            for i in 0..AXES {
+                bp[i].insert(b[i].trunc() as i64);
+                grow[i].insert(g[i]);
+            }
+        }
+        Self {
+            stat: stat.map(|s| s.into_iter().collect()),
+            bp: bp.map(|s| s.into_iter().collect()),
+            grow: grow.map(|s| s.into_iter().collect()),
+        }
+    }
 }
 
-impl RefineSettled {
-    fn over(kept: &[Candidate]) -> Self {
-        // 一格都沒剩就沒有「確定」可言 —— 全部留空，`all` 也不能是 true，
-        // 否則畫面會把「篩到空的」說成「全部問完了」。
-        let Some(first) = kept.first() else {
-            return Self {
-                stat: [None; petcalc::STATS],
-                bp: [None; AXES],
-                grow: [None; AXES],
-                all: false,
-            };
-        };
-        let head_stat = stat_columns(first.stat);
-        let head_bp = first.bp.to_array();
-        let head_grow = first.grow.to_array();
-        let stat = std::array::from_fn(|i| {
-            kept.iter()
-                .all(|c| stat_columns(c.stat)[i] == head_stat[i])
-                .then_some(head_stat[i])
-        });
-        // BP 是浮點，但同一組 (檔次, 加點, 隨機檔) 算出來的位元是一樣的，
-        // 所以「一致」比的是**顯示得出來的那個值**，跟 `bp_hit` 用同一把尺。
-        let bp = std::array::from_fn(|i| {
-            kept.iter()
-                .all(|c| bp_hit(c.bp.to_array()[i], head_bp[i]))
-                .then_some(head_bp[i])
-        });
-        let grow = std::array::from_fn(|i| {
-            kept.iter()
-                .all(|c| c.grow.to_array()[i] == head_grow[i])
-                .then_some(head_grow[i])
-        });
+impl From<&RefineOptions> for RefineSettled {
+    /// 只剩一個選項 ＝ 那一欄已確定。一個選項都沒有（篩到空）就不是確定，
+    /// 否則畫面會把「條件互斥」說成「全部問完了」。
+    fn from(o: &RefineOptions) -> Self {
+        let only = |v: &Vec<i64>| (v.len() == 1).then(|| v[0]);
+        let stat = std::array::from_fn(|i| only(&o.stat[i]));
+        let bp = std::array::from_fn(|i| only(&o.bp[i]));
+        let grow = std::array::from_fn(|i| (o.grow[i].len() == 1).then(|| o.grow[i][0]));
         Self {
             // ⭐ 只數原程式問的那 12 欄 —— 精神／回復 ＋ BP 五軸 ＋ 檔次五軸。
             all: stat[5].is_some()
