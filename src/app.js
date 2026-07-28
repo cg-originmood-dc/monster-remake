@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import * as api from './api.js';
 import { parseStats, formatStats } from './parse.js';
+import { readShareLink, writeShareLink } from './share.js';
 import { html, Shell, Row, Btn, BtnRow, NumField, Stepper, AxisFields, clamp } from './ui.js';
 import { PetPicker } from './petpicker.js';
 import { AnalyzePanel, RangePanel, SimulatePanel, SIDE_TABS, DEFAULT_RANGES } from './panels.js';
@@ -37,7 +38,12 @@ const initialState = (constants) => ({
     /** 能力倍率在介面上是 ×100 的整數（原程式恆為 20 ＝ 0.20）。 */
     bprate100: Math.round(constants.default_bprate * 100),
     lvl: 1,
-    statText: '',
+    /**
+     * ⚠️ 開場值是**網址帶進來的**（`?q=衝浪小黃鴨 114 77 50 40 31`，見 `share.js`）。
+     * 沒帶就是空字串 ＝ 跟以前逐字一樣。填進來之後不必再做別的事：
+     * 底下那個認寵物名的 effect 會自己醒過來，把檔次／倍率／等級一起帶好。
+     */
+    statText: readShareLink(),
 
     calcMode: 'smart',
     plan: 'free',
@@ -128,6 +134,13 @@ export function App({ boot }) {
         // 沿用的話，上一次查 60 級留下來的數字會悄悄套到這次的查詢上。
         set({ lvl: parsed.lvl != null ? clamp(parsed.lvl, 1, 255) : 1 });
     }, [parsed.pet, parsed.lvl]);
+
+    // 位址列跟著「當前能力」走，這樣使用者直接複製網址就是一條分享得出去的連結。
+    // 那格空著時退回寵物名 —— 從圖鑑點一隻進來也該分享得出去。
+    // ⚠️ **原程式沒有這個**（它沒有網址），見 `share.js`。
+    useEffect(() => {
+        writeShareLink(s.statText || s.petName);
+    }, [s.statText, s.petName]);
 
     const runGuess = async () => {
         if (!parsed.ok) {
@@ -399,7 +412,11 @@ const MODE_HINT = {
     mp: '魔：每升一級都加魔法',
 };
 
-const HELP = '填檔次與當前能力後按「計算」推算掉檔／加點／隨機檔；左邊分頁可展開進階條件。';
+// ⚠️ 後半句那條網址是**移植版加的**（`share.js`）—— 原程式沒有網址。
+// 擺在這裡是因為位址列自己不會出聲，不講的話沒有人知道它可以複製去分享。
+const HELP =
+    '填檔次與當前能力後按「計算」推算掉檔／加點／隨機檔；左邊分頁可展開進階條件。' +
+    '網址列會跟著「當前能力」走，複製起來就是一條可以分享的連結（?q=寵物名 血 魔 攻 防 敏）。';
 
 // ── 請求組裝 ────────────────────────────────────────────────────────────────
 
