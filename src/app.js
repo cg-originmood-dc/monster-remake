@@ -188,8 +188,16 @@ export function App({ boot }) {
 
     return html`
         <div class="app">
-            <div class="deck ${tab ? 'with-panel' : ''}">
-                <nav class="side-tabs ${tab ? 'with-panel' : ''}">
+            <div class="deck">
+                ${
+                    /* 分頁的行為照原程式的 `showpanel`：
+                        · 點**別顆** → 收掉全部面板，只開那一頁（不動任何視窗位置）
+                        · 點**目前那顆** → 收起來，按鈕彈起，「目前分頁」歸零
+                       第二條就是使用者說的「分析點了自己不會 focus」—— 它不是沒反應，
+                       是原程式本來就會收起來。滑鼠點完的殘留焦點框則由 CSS 關掉：
+                       原程式那三顆是 owner-drawn 圖片，拿不到焦點。 */ ''
+                }
+                <nav class="side-tabs">
                     ${SIDE_TABS.map(
                         (t) => html`
                             <button
@@ -197,6 +205,7 @@ export function App({ boot }) {
                                 type="button"
                                 class="side-tab tab-${t.key} ${tab === t.key ? 'on' : ''}"
                                 title=${t.label}
+                                aria-pressed=${tab === t.key}
                                 onClick=${() => setTab(tab === t.key ? null : t.key)}
                             ></button>
                         `,
@@ -204,10 +213,9 @@ export function App({ boot }) {
                 </nav>
 
                 ${
-                    /* 側欄的位子**永遠留著**（`.side-slot` 是固定寬的），關起來只是空著。
-                      不留的話開合會把主視窗左右推 —— 桌面程式往左長不影響別人，
-                      網頁上那是整塊版面在跳。面板在槽裡靠右貼著主視窗，
-                      所以最寬的「擴展」頁展開時也不會頂到主視窗。 */ ''
+                    /* 側欄的位子**永遠留著**（`.side-slot` 是 `--side-w` 寬），關起來只是空著。
+                      不留的話分頁列跟主視窗會在開合時橫移半個畫面 —— 而原程式的分頁列
+                      是**不動的**（見 style.css 的 `.deck`）。面板在槽裡靠右貼著主視窗。 */ ''
                 }
                 <div class="side-slot">
                     ${

@@ -348,15 +348,25 @@ body {
     font-size: 15px;
 }
 
-/* 一排的順序是 [直立分頁][側欄][主視窗]：側欄往**左**開，分頁貼在最左緣。
+/* 一排的順序是 [直立分頁][側欄][主視窗]。
  *
  * `safe center` 是必要的 —— 純 center 在內容擠不下時會把左半邊推成負座標，
  * 那一塊是捲不回來的（Chromium 的老問題）。WebView2 是 Chromium，支援 safe。 */
-/* 側欄是往**左**開的，所以左邊那塊空白要**預先留著**：關起來時用 padding 佔位，
- * 展開時 padding 收掉、面板長進去。兩種狀態下主視窗的 x 完全一樣（實測 509），
- * 分頁則跟著面板走 —— 原程式就是這樣，視窗往左長、右緣不動。
+/* ⭐ **直立分頁一格都不會動。** 原程式的分頁按鈕跟主視窗不在同一個表單上：
+ * 分頁畫在外殼那層，主視窗是疊在上面的另一個表單。收起側欄那條路只對分頁按鈕
+ * 做「彈起 ＋ 重畫」，一次都沒有搬過它的位置；搬的是主視窗（收起時貼回外殼的左上角）。
  *
- * 不預留的話（或整組置中）主視窗會被推來推去，開合一次整個版面滑一次。 */
+ * > ### ⚠️ 這裡原本寫「分頁則跟著面板走 —— 原程式就是這樣，視窗往左長、右緣不動」
+ * >
+ * > **那句是編的**（§4.0 抓到的第八次）。實際照著它寫出來的行為是：開合側欄時
+ * > 分頁列橫向瞬移 `--side-w`、縱向瞬移 33px —— 滑鼠停著不動，底下那顆按鈕就換了一顆，
+ * > 剛按完的那顆從指標下面跑掉。使用者回報的「tab 的 focus 狀態跟事件都怪怪的」就是這個。
+ *
+ * 所以側欄那格**永遠佔著 `--side-w`**（收起來只是空著），分頁列跟主視窗的座標
+ * 在兩種狀態下都一樣。
+ *
+ * ⚠️ **有一處沒照抄**：原程式收起側欄時主視窗會往左貼回外殼（`Form2.Left := Form1.Left`），
+ * 移植版讓它留在原地。桌面上那是一個獨立視窗自己移動，網頁上會變成整塊版面橫移半個畫面。 */
 .deck {
     display: flex;
     align-items: flex-start;
@@ -364,29 +374,28 @@ body {
     max-width: 100%;
     overflow-x: auto;
     padding-bottom: 4px;
-    padding-left: var(--side-w);
-}
-.deck.with-panel {
-    padding-left: 0;
 }
 .side-slot {
     display: flex;
+    /* 收合與否都佔同一塊寬度 —— 這是「分頁列不動」的實作 */
+    flex: 0 0 var(--side-w);
+    /* 面板靠右貼著主視窗（`.side-panel` 本身就是 `--side-w` 寬，這條是保險） */
+    justify-content: flex-end;
 }
 
 /* ── 直立分頁 ──────────────────────────────────────────────────────────── */
 
 /* 原圖 21×46（分/析 兩個字直排烘在裡面），照主視窗的放大率放到 38×84。
  * 負的 margin-right 把它塞到右邊那塊底下 —— 原程式就是只露出左邊一小條。 */
+/* `margin-top` **不隨開合改變**（見上面 `.deck` 那段）。這個值是視覺對齊挑的，
+ * 原程式只釘住「不會動」，沒說該對齊誰。 */
 .side-tabs {
     display: flex;
     flex-direction: column;
     gap: 3px;
     flex: 0 0 auto;
-    margin-top: 45px;
-    margin-right: -12px;
-}
-.side-tabs.with-panel {
     margin-top: 12px;
+    margin-right: -12px;
 }
 .side-tab {
     width: 34px;
@@ -397,6 +406,16 @@ body {
     image-rendering: pixelated;
     cursor: pointer;
     filter: drop-shadow(-2px 2px 3px rgba(0, 0, 0, 0.4));
+}
+/* 原程式那三顆是 owner-drawn 的圖片控制項 —— 沒有視窗 handle，**根本拿不到焦點**，
+ * 狀態只有彈起／壓下兩種。用 `<button>` 才有的點擊殘留焦點框不是原程式的東西，
+ * 所以只留給鍵盤導覽（`:focus-visible`），滑鼠點完不留痕。 */
+.side-tab:focus {
+    outline: none;
+}
+.side-tab:focus-visible {
+    outline: 2px solid var(--teal-on, #7fd);
+    outline-offset: 1px;
 }
 .side-tab.tab-analyze {
     background-image: url(./assets/ui/tab-analyze-up.png);
