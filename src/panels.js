@@ -1,12 +1,29 @@
 // 左側直立分頁展開出來的三塊側欄。
 //
-// 欄位與版面照原程式的實機截圖（CLAUDE.md §4.3）。原程式把這些
-// 拆在窄版與寬版兩個表單裡，這裡合成同一塊面板的三個分頁。
+// 欄位與版面照原程式的實機截圖（CLAUDE.md §4.3）。
 //
-// 側欄**沒有標題列** —— 原程式那兩個表單就是一塊光板子，是哪一頁看亮起來的
+// 側欄**沒有標題列** —— 原程式那塊就是一片光板子，是哪一頁看亮起來的
 // 直立分頁就知道了。
+//
+// ## ⭐ 哪一顆分頁開哪一頁 —— 這裡曾經整組對錯
+//
+// 原程式三顆分頁能開**七個**面板，靠 Ctrl／Alt 修飾鍵分岔。平常左鍵那三條是：
+//
+// | 分頁 | 原程式的面板 | 內容                                                     |
+// | ---- | ------------ | -------------------------------------------------------- |
+// | 分析 | `Panelan`    | 入手等級／能力無效／加點方式                             |
+// | 擴展 | `panelct`    | **檔次範圍／隨機檔範圍**（＝搜尋範圍）                   |
+// | 模擬 | `Panelsi`    | **入手等級／能力係數／當前等級／加點／暴點加點／檔次／隨機檔** |
+//
+// 依據是把每個面板上的字串逐一取出來對的，不是照面板名字猜的
+// —— 名字反而會騙人：`Panelex`（ex ＝ 擴展）掛在 **Ctrl＋擴展** 底下，
+// 內容是「等級1／等級2 兩段混加」，跟「擴展」那顆平常點出來的東西無關。
+//
+// 移植版先前是「擴展 → `Panelsi` 的內容、模擬 → 成長表、搜尋範圍折進分析頁」，
+// 三條全錯。修正紀錄見 CLAUDE.md §4.0 與 §4.3。
+//
+// ⬜ Ctrl／Alt 那四個面板（`Panelex` `Panelsot` `Panelwl` `Panelssp`）還沒做。
 
-import { useState } from 'preact/hooks';
 import { html, Panel, Row, Btn, BtnRow, ToggleRow, NumField, SpinField, AxisFields } from './ui.js';
 
 /**
@@ -23,7 +40,12 @@ export const DEFAULT_RANGES = {
     random_max: [10, 10, 10, 10, 10],
 };
 
-/** 側欄分頁 —— 對應原程式左緣那排直立標籤。 */
+/**
+ * 側欄分頁 —— 對應原程式左緣那排直立標籤。
+ *
+ * 順序與 `Tag` 照原程式的建立碼：三顆 `TImageControl` 由上到下建出來，
+ * `Tag` 依序 1／2／3。
+ */
 export const SIDE_TABS = [
     { key: 'analyze', label: '分析' },
     { key: 'expand', label: '擴展' },
@@ -169,6 +191,7 @@ export const AnalyzePanel = ({ s, set, constants, catchParsed }) => {
             </p>`
             }
 
+            ${/* ⚠️ 「比對方式」原程式沒有 —— 移植版加的（`MatchMode`，見 CLAUDE.md §3.4）。 */ ''}
             <${Row} label="比對方式">
                 <${BtnRow}
                     options=${MATCH_MODES}
@@ -177,12 +200,6 @@ export const AnalyzePanel = ({ s, set, constants, catchParsed }) => {
                 />
             <//>
             <p class="hint">${MATCH_MODE_HINT[s.matchMode]}</p>
-
-            <${SearchRanges}
-                value=${s.ranges}
-                onChange=${(ranges) => set({ ranges })}
-                constants=${constants}
-            />
         <//>
     `;
 };
@@ -217,19 +234,36 @@ const MATCH_MODE_HINT = {
     auto: '推不出解時自動放寬，用到哪一段會顯示在下面。',
 };
 
+// ── 擴展（`panelct`）── 搜尋範圍 ─────────────────────────────────────────────
+
 /**
- * 推算的搜尋範圍 —— 原程式 `TForm2.panelct` 那一頁。
+ * 推算的搜尋範圍 —— 原程式的「擴展」分頁（`panelct`）。
  *
- * 原程式把它做成獨立的一頁，兩欄各填一整串 `上限;下限`。移植版折進「分析」裡
- * 收起來放：側欄的直立分頁是圖檔 sprite，原程式只畫了三個，加第四個得憑空造圖；
- * 而這幾個數字跟同一頁的「入手能力／加點方式」本來就是同一類東西
- * —— 都是拿來縮小推算解空間的約束。
+ * ⭐ 這一頁**就是「擴展」那顆分頁**。先前折進「分析」裡收起來放，理由寫的是
+ * 「直立分頁只有三個 sprite，加第四個得憑空造圖」—— 那個前提是錯的：
+ * 搜尋範圍本來就有自己的分頁，不需要第四顆。
+ *
+ * 原程式那兩欄各填一整串 `上限;下限`（`4 4 4 4 4;0 0 0 0 0`），移植版拆成
+ * 上下界各一排欄位，語意一樣。底下那句提示是原程式的字串。
  *
  * 預設值就是先前寫死的搜尋寬度，所以不碰它的話行為跟以前一模一樣
  * （`wire_check.rs::omitting_the_search_ranges_matches_spelling_out_the_defaults`）。
  */
+export const RangePanel = ({ s, set, constants }) => html`
+    <${Panel} className="side-panel">
+        <p class="hint warn">
+            ${'提示：如果你不知道自己在做什麼，請不要改變這裡的設定。'}
+            ${'限定條件是拿來加快驗證結果的，填錯了會把正確答案濾掉。'}
+        </p>
+        <${SearchRanges}
+            value=${s.ranges}
+            onChange=${(ranges) => set({ ranges })}
+            constants=${constants}
+        />
+    <//>
+`;
+
 const SearchRanges = ({ value, onChange, constants }) => {
-    const [open, setOpen] = useState(false);
     const names = constants.axis_names;
     const touched = RANGE_FIELDS.some((f) => value[f].some((v, i) => v !== DEFAULT_RANGES[f][i]));
 
@@ -259,29 +293,15 @@ const SearchRanges = ({ value, onChange, constants }) => {
     `;
 
     return html`
-        <${Row} label="搜尋範圍">
-            <${Btn} active=${open} onClick=${() => setOpen(!open)}>${open ? '收起' : '展開'}<//>
+        ${field('loss_min', '掉檔下限', constants.max_loss_bound)}
+        ${field('loss_max', '掉檔上限', constants.max_loss_bound)}
+        ${field('random_min', '隨機檔下限', pool)}
+        ${field('random_max', '隨機檔上限', pool)}
+        <${Row} label="">
+            <${Btn} disabled=${!touched} onClick=${() => onChange({ ...DEFAULT_RANGES })}>還原<//>
             ${touched && html`<span class="rest">已改過預設</span>`}
+            ${contradiction && html`<span class="parse-note bad">${contradiction}</span>`}
         <//>
-        ${
-            open &&
-            html`
-            <p class="hint warn">
-                ${'提示：如果你不知道自己在做什麼，請不要改變這裡的設定。'}
-                ${'限定條件是拿來加快驗證結果的，填錯了會把正確答案濾掉。'}
-            </p>
-            ${field('loss_min', '掉檔下限', constants.max_loss_bound)}
-            ${field('loss_max', '掉檔上限', constants.max_loss_bound)}
-            ${field('random_min', '隨機檔下限', pool)}
-            ${field('random_max', '隨機檔上限', pool)}
-            <${Row} label="">
-                <${Btn} disabled=${!touched} onClick=${() => onChange({ ...DEFAULT_RANGES })}>
-                    還原
-                <//>
-                ${contradiction && html`<span class="parse-note bad">${contradiction}</span>`}
-            <//>
-        `
-        }
     `;
 };
 
@@ -299,7 +319,7 @@ function restPoints(s) {
     return pool - s.fixedPoints.reduce((a, b) => a + b, 0);
 }
 
-// ── 擴展 ────────────────────────────────────────────────────────────────────
+// ── 模擬（`Panelsi`）─────────────────────────────────────────────────────────
 
 const GROW_MODE = [
     { key: 'none', label: '不加' },
@@ -331,11 +351,20 @@ const BURST_HINT =
     '搭配左邊的「加點」就能看「一直加 A、之後改加 B」的成長表。';
 
 /**
- * 手動把檔次／隨機檔填進去、直接看能力 —— 原程式的「展開」頁。
+ * 手動把檔次／隨機檔填進去、直接看能力 —— 原程式的「模擬」分頁（`Panelsi`）。
+ *
+ * ⭐ 這一頁**掛在「模擬」那顆分頁底下**，不是「擴展」。移植版先前掛錯了。
+ * 原程式那一頁的欄位（字串逐一取自執行檔）是：
+ *
+ *     入手等級 ｜ 能力係數: ｜ 0.045 0系 ｜ 當前等級 ｜ 加點 ｜ 暴點加點
+ *     ｜ 檔次 ｜ 隨機檔 ｜ 模擬 ｜ 復位
  *
  * 這一頁不做推算，是反過來的：已知檔次時拿來驗證，或試各種隨機檔的結果。
+ *
+ * ⚠️ 「能力係數」旁邊那個 `0系` 下拉**沒有做** —— 語意沒逆出來（看起來像種族，
+ * 但為什麼要能選、選了影響什麼都沒查到）。照 §4.0 第 1 條不猜。
  */
-export const ExpandPanel = ({ s, set, constants, coef }) => html`
+export const SimulatePanel = ({ s, set, constants, coef, onRun, busy }) => html`
     <${Panel} className="side-panel wide">
         <${Row} label="入手等級">
             <${SpinField}
@@ -375,8 +404,9 @@ export const ExpandPanel = ({ s, set, constants, coef }) => html`
                 onChange=${(simGrow) => set({ simGrow })}
                 extras=${html`
                     <${Btn} title="清成 0" onClick=${() => set({ simGrow: [0, 0, 0, 0, 0] })}>C<//>
+                    ${/* ⚠️ 這顆原程式沒有 —— 原程式這個位置是「模擬」（見下面那列）。 */ ''}
                     <${Btn}
-                        title="從主視窗的最高檔次帶過來（＝一檔都沒掉）"
+                        title="從主視窗的最高檔次帶過來（＝一檔都沒掉）。原程式沒有這顆"
                         onClick=${() => set({ simGrow: [...s.grow] })}
                     >
                         ↑
@@ -420,19 +450,17 @@ export const ExpandPanel = ({ s, set, constants, coef }) => html`
                 合計 ${randomSum(s)} / ${constants.random_pool}
             </span>
         <//>
-    <//>
-`;
 
-const randomSum = (s) => s.random.reduce((a, b) => a + b, 0);
+        ${
+            /* ⭐ 原程式這一頁的檔次那列最後一顆就叫「模擬」，但那顆按下去做什麼
+               **沒有完整逆出來**：`TForm2.simu` 讀的是寵物庫選取項目的檔次與隨機檔、
+               組成兩串字串，看起來是「把選中那隻的資料帶進這兩排」而不是產生成長表
+               —— 讀到寫回去那一步就斷了，所以不照抄。
 
-/** 實際檔次比圖鑑低多少 —— 負數代表填反了。 */
-const lostFrom = (s) => s.grow.map((g, i) => g - s.simGrow[i]);
-
-// ── 模擬 ────────────────────────────────────────────────────────────────────
-
-/** 一段等級區間的成長表 —— 原程式的成長模擬視窗。 */
-export const SimulatePanel = ({ s, set, onRun, busy }) => html`
-    <${Panel} className="side-panel">
+               這裡接的是移植版自己的成長表（原本掛在舊「模擬」分頁上）。
+               ⚠️ 「等級區間」那兩格原程式也沒有，是移植版加的：原程式那顆按鈕
+               不需要區間，這裡需要。 */ ''
+        }
         <${Row} label="等級區間">
             <${NumField}
                 value=${s.simFrom}
@@ -447,12 +475,16 @@ export const SimulatePanel = ({ s, set, onRun, busy }) => html`
                 max=${255}
                 onChange=${(simTo) => set({ simTo })}
             />
-        <//>
-        <${Row} label="">
-            <${Btn} wide disabled=${busy} onClick=${onRun}>${busy ? '計算中…' : '產生成長表'}<//>
+            <${Btn} disabled=${busy} onClick=${onRun}>${busy ? '計算中…' : '模擬'}<//>
         <//>
         <p class="hint">
-            用「擴展」頁的檔次與隨機檔正算，不做推算。加點依主視窗的運算模式逐級套用。
+            「模擬」用上面的檔次與隨機檔正算出整段成長表，不做推算。
+            加點依主視窗的運算模式逐級套用。
         </p>
     <//>
 `;
+
+const randomSum = (s) => s.random.reduce((a, b) => a + b, 0);
+
+/** 實際檔次比圖鑑低多少 —— 負數代表填反了。 */
+const lostFrom = (s) => s.grow.map((g, i) => g - s.simGrow[i]);

@@ -18,7 +18,7 @@ import * as api from './api.js';
 import { parseStats, formatStats } from './parse.js';
 import { html, Shell, Row, Btn, BtnRow, NumField, Stepper, AxisFields, clamp } from './ui.js';
 import { PetPicker } from './petpicker.js';
-import { AnalyzePanel, ExpandPanel, SimulatePanel, SIDE_TABS, DEFAULT_RANGES } from './panels.js';
+import { AnalyzePanel, RangePanel, SimulatePanel, SIDE_TABS, DEFAULT_RANGES } from './panels.js';
 import { GuessResults, SeriesTable, StatStrip } from './results.js';
 import { CatalogWindow } from './catalog.js';
 
@@ -29,7 +29,7 @@ const initialState = (constants) => ({
     /** 主視窗的「最高檔次」＝ 圖鑑上限，推算時當作掉檔前的起點。 */
     grow: [0, 0, 0, 0, 0],
     /**
-     * 「擴展」頁的「檔次」＝ **實際**檔次（已經掉過檔的）。
+     * 「模擬」頁的「檔次」＝ **實際**檔次（已經掉過檔的）。
      * 這兩個是不同的東西：推算是從最高檔次往下找實際檔次，
      * 而正算是拿實際檔次直接算能力。選寵物時兩邊一起填，之後各走各的。
      */
@@ -98,9 +98,9 @@ export function App({ boot }) {
     const growDto = useMemo(() => toGrowDto(s.grow, s.bprate100), [s.grow, s.bprate100]);
     const simGrowDto = useMemo(() => toGrowDto(s.simGrow, s.bprate100), [s.simGrow, s.bprate100]);
 
-    // 「擴展」頁的正算預覽：實際檔次＋隨機檔＋加點 → 能力。改什麼都即時重算，
+    // 「模擬」頁的正算預覽：實際檔次＋隨機檔＋加點 → 能力。改什麼都即時重算，
     // 但每次敲鍵都跑一趟 IPC 太吵，所以壓一下。
-    const preview = useLivePreview({ s, growDto: simGrowDto, active: tab === 'expand' });
+    const preview = useLivePreview({ s, growDto: simGrowDto, active: tab === 'simulate' });
 
     const modeInfo = constants.calc_modes.find((m) => m.key === s.calcMode);
     const planEditable = !!modeInfo?.takes_manual_plan;
@@ -222,10 +222,15 @@ export function App({ boot }) {
                         tab === 'analyze' &&
                         html`<${AnalyzePanel} ...${sideProps} catchParsed=${parsedCatch} />`
                     }
-                    ${tab === 'expand' && html`<${ExpandPanel} ...${sideProps} coef=${growCoef} />`}
+                    ${tab === 'expand' && html`<${RangePanel} ...${sideProps} />`}
                     ${
                         tab === 'simulate' &&
-                        html`<${SimulatePanel} ...${sideProps} onRun=${runSeries} busy=${busy} />`
+                        html`<${SimulatePanel}
+                            ...${sideProps}
+                            coef=${growCoef}
+                            onRun=${runSeries}
+                            busy=${busy}
+                        />`
                     }
                 </div>
 
@@ -342,7 +347,7 @@ export function App({ boot }) {
                 <//>
             </div>
 
-            ${tab === 'expand' && html`<${StatStrip} row=${preview} constants=${constants} />`}
+            ${tab === 'simulate' && html`<${StatStrip} row=${preview} constants=${constants} />`}
             <${GuessResults} resp=${guessResp} constants=${constants} onNarrow=${narrowRanges} />
             <${SeriesTable} rows=${seriesRows} constants=${constants} />
 
@@ -514,7 +519,7 @@ async function save(s, preview, setStatus) {
 // ── 正算預覽 ────────────────────────────────────────────────────────────────
 
 /**
- * 「擴展」頁的即時能力預覽。
+ * 「模擬」頁的即時能力預覽。
  *
  * 每次改欄位都往後端跑一趟；120ms 的抖動抑制夠讓連打數字時只送最後一次。
  * 回應可能亂序（後端跑在別的執行緒），所以用序號擋掉過期的結果。
