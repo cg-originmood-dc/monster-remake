@@ -25,7 +25,36 @@ import { CatalogWindow } from './catalog.js';
 
 const STATUS_IDLE = '料理果然還是有個最美味的時間啊';
 
-const initialState = (constants) => ({
+/** 選一隻寵物要填的那幾格 —— 手動點選與開場帶網址共用同一份。 */
+const petFields = (p) => ({
+    petName: p.name,
+    grow: [...p.grow],
+    // 還沒推算之前，實際檔次的最好猜測就是圖鑑值（＝一檔都沒掉）
+    simGrow: [...p.grow],
+    bprate100: Math.round(p.bprate * 100),
+});
+
+const petStatus = (p) => `${p.name}　${p.race_name}　檔次 ${p.grow.join(' ')}`;
+
+/**
+ * 開場時網址帶進來的東西（`?q=…`，見 `share.js`）。
+ *
+ * ⚠️ **只帶寵物名、一個數字都沒有時，「當前能力」那格要留空。** 那格收的是能力，
+ * 把名字填進去只會得到紅框加一句「只認出 0 項」—— 寵物明明已經照著網址載好了，
+ * 那句話既不對也沒用。留空才看得到那格自己的提示字「格式:血魔攻防敏(精神回復)」，
+ * 也就是使用者接下來真正該做的事。
+ *
+ * 帶了數字的那條路一個字都沒變：`text` 原樣填進去，寵物與等級交給既有那個
+ * 認寵物名的 effect 去帶。
+ */
+const seedFromLink = (pets) => {
+    const text = readShareLink();
+    const parsed = parseStats(text, pets);
+    const nameOnly = !!parsed.pet && parsed.matched === 0;
+    return { text: nameOnly ? '' : text, pet: nameOnly ? parsed.pet : null };
+};
+
+const initialState = (constants, seed) => ({
     petName: '',
     /** 主視窗的「最高檔次」＝ 圖鑑上限，推算時當作掉檔前的起點。 */
     grow: [0, 0, 0, 0, 0],
@@ -37,13 +66,11 @@ const initialState = (constants) => ({
     simGrow: [0, 0, 0, 0, 0],
     /** 能力倍率在介面上是 ×100 的整數（原程式恆為 20 ＝ 0.20）。 */
     bprate100: Math.round(constants.default_bprate * 100),
+    // ⚠️ 網址只帶寵物名時，上面那四格在這裡就被蓋掉（見 `seedFromLink`）。
+    ...(seed.pet ? petFields(seed.pet) : null),
     lvl: 1,
-    /**
-     * ⚠️ 開場值是**網址帶進來的**（`?q=衝浪小黃鴨 114 77 50 40 31`，見 `share.js`）。
-     * 沒帶就是空字串 ＝ 跟以前逐字一樣。填進來之後不必再做別的事：
-     * 底下那個認寵物名的 effect 會自己醒過來，把檔次／倍率／等級一起帶好。
-     */
-    statText: readShareLink(),
+    /** ⚠️ 開場值是**網址帶進來的**（`?q=衝浪小黃鴨 114 77 50 40 31`，見 `share.js`）。 */
+    statText: seed.text,
 
     calcMode: 'smart',
     plan: 'free',
@@ -76,11 +103,16 @@ const initialState = (constants) => ({
 export function App({ boot }) {
     const { constants } = boot;
     const [catalog, setCatalog] = useState(boot.catalog);
-    const [s, setS] = useState(() => initialState(constants));
+    // 網址只在開場看一次 —— 之後位址列是跟著畫面走的（`writeShareLink`），
+    // 再回頭讀它就會變成自己餵自己。
+    const [seed] = useState(() => seedFromLink(boot.catalog.pets));
+    const [s, setS] = useState(() => initialState(constants, seed));
     const [tab, setTab] = useState('analyze');
     // 自製寵物存檔讀壞時要講出來 —— 使用者的資料還在檔案裡，這時候去按「保存」
     // 就會把它整個蓋掉，所以一開場就得看到。
-    const [status, setStatus] = useState(boot.custom_error ?? STATUS_IDLE);
+    const [status, setStatus] = useState(
+        boot.custom_error ?? (seed.pet ? petStatus(seed.pet) : STATUS_IDLE),
+    );
     const [busy, setBusy] = useState(false);
     const [guessResp, setGuessResp] = useState(null);
     const [seriesRows, setSeriesRows] = useState(null);
@@ -98,6 +130,11 @@ export function App({ boot }) {
 
     // 帶圖鑑進去，這格才認得出 `幽紫妖靈 99 133 32 38 36` 開頭的寵物名（見 `parse.js`）。
     const parsed = useMemo(() => parseStats(s.statText, catalog.pets), [s.statText, catalog.pets]);
+    // 認出寵物名、但一個數字都還沒填 —— **這不是填錯，是還沒填完**（手打名字打到一半
+    // 就會經過這個狀態）。所以不轉紅框、也不說「只認出 0 項」：寵物已經載好了，
+    // 那句話既不對也沒用，該講的是接下來要填什麼。
+    const nameOnly = !!parsed.pet && parsed.matched === 0;
+    const parseBad = !!s.statText && !parsed.ok && !nameOnly;
     // 「入手能力」跟「當前能力」用同一個寬鬆解析器 —— 使用者兩格都是用貼的。
     // **那格不帶圖鑑**：入手能力講的是同一隻寵物的另一個時間點，寫名字沒有意義。
     const parsedCatch = useMemo(() => parseStats(s.catchStatText), [s.catchStatText]);
@@ -112,14 +149,8 @@ export function App({ boot }) {
     const planEditable = !!modeInfo?.takes_manual_plan;
 
     const pickPet = (p) => {
-        set({
-            petName: p.name,
-            grow: [...p.grow],
-            // 還沒推算之前，實際檔次的最好猜測就是圖鑑值（＝一檔都沒掉）
-            simGrow: [...p.grow],
-            bprate100: Math.round(p.bprate * 100),
-        });
-        setStatus(`${p.name}　${p.race_name}　檔次 ${p.grow.join(' ')}`);
+        set(petFields(p));
+        setStatus(petStatus(p));
     };
 
     // 「當前能力」貼進一整串 `幽紫妖靈 99 133 32 38 36` 時，順手把寵物與等級一起帶進來
@@ -321,7 +352,7 @@ export function App({ boot }) {
                     <${Row} label="當前能力">
                         <input
                             type="text"
-                            class="field wide ${s.statText && !parsed.ok ? 'bad' : ''}"
+                            class="field wide ${parseBad ? 'bad' : ''}"
                             value=${s.statText}
                             placeholder="格式:血魔攻防敏(精神回復)"
                             ${/* 提示只放在 title 裡 —— 凹槽裡那句是原程式的字，不改。 */ ''}
@@ -335,13 +366,14 @@ export function App({ boot }) {
                         />
                         ${
                             /* 原程式這一列就是一條到底的凹槽，沒有旁註：認齊了不出聲，
-                              認不齊才擠一句出來（欄位同時會轉紅框）。 */ ''
+                              認不齊才擠一句出來（欄位同時會轉紅框）。
+                              只認出寵物名的那一步不算「認不齊」—— 見 `nameOnly`。 */ ''
                         }
                         ${
-                            s.statText &&
-                            !parsed.ok &&
+                            parseBad &&
                             html`<span class="parse-note bad">只認出 ${parsed.matched} 項</span>`
                         }
+                        ${nameOnly && html`<span class="parse-note">接著填血魔攻防敏</span>`}
                     <//>
 
                     <${Row} label="運算模式">
