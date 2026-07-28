@@ -121,6 +121,12 @@ pub struct Distribution {
     /// ⚠️ 跟 [`lost_total_marginal`](Self::lost_total_marginal) 一樣，
     /// 這個**推不出來** —— 逐軸邊際沒有保留軸與軸之間的搭配。
     pub lost_combos: Vec<LostCombo>,
+    /// ⭐ **原程式主視窗「計算結果」欄印的就是這個。**
+    ///
+    /// 一列 ＝ 一組**表觀檔次**（`實際檔次 + 隨機檔`），機率是所有能拼出這組
+    /// 表觀檔次的（掉檔, 隨機檔）拆法的權重總和。原程式印的是與圖鑑的差
+    /// `表觀檔次[i] − 圖鑑檔次[i]`，也就是 [`ApparentCombo::apparent`]。
+    pub apparent_combos: Vec<ApparentCombo>,
 }
 
 /// 一種掉檔組合，以及所有落在這個組合上的候選的機率總和。
@@ -134,6 +140,26 @@ pub struct LostCombo {
     /// 這一組的總掉檔量 ＝ `lost` 的和。
     pub total: i32,
     /// 落在這一組的候選的機率總和（百分點）。全部組別加起來是 100。
+    pub percent: f64,
+}
+
+/// ⭐ 一組**表觀檔次**與落在它上面的機率總和 —— 原程式結果欄的一列。
+///
+/// 「表觀檔次」＝ `實際檔次 + 隨機檔`。同一組表觀檔次可以由好幾種
+/// （掉檔, 隨機檔）拆法湊出來，原程式把那些拆法的權重全部加在同一列上。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ApparentCombo {
+    /// 逐軸的 `表觀檔次[i] − 圖鑑檔次[i]`，也就是 `隨機檔[i] − 掉檔[i]`。
+    ///
+    /// 可正可負，原程式就是照這個數字原樣印（`0 -4 1 2 1`）。
+    pub apparent: [i32; AXES],
+    /// 這一列的總掉檔量。
+    ///
+    /// 不必另外存也算得出來：隨機檔總和恆為 [`RANDOM_POOL`]，
+    /// 所以 `Σapparent = RANDOM_POOL − total`。原程式列首那個 `%2d檔`
+    /// 印的就是這個值，而它算的方式正是這條恆等式。
+    pub total: i32,
+    /// 落在這一列的機率總和（百分點）。全部列加起來是 100。
     pub percent: f64,
 }
 
@@ -161,14 +187,18 @@ impl Distribution {
         let mut lost_total_marginal = [0.0f64; TOTAL_LOST_SLOTS];
         // 掉檔組合 → 機率總和。相異組合最多 5^5 = 3125 種，實務上遠少於此。
         let mut combos: BTreeMap<[i32; AXES], f64> = BTreeMap::new();
+        // 表觀檔次組合 → 機率總和（原程式結果欄的那幾列）。
+        let mut apparent: BTreeMap<[i32; AXES], f64> = BTreeMap::new();
         let cat = catalog.to_array();
 
         for (c, &p) in candidates.iter().zip(&percent) {
             let grow = c.grow.to_array();
             let mut lost_sum = 0;
             let mut lost_tuple = [0i32; AXES];
+            let mut apparent_tuple = [0i32; AXES];
             for axis in 0..AXES {
                 let lost = cat[axis] - grow[axis];
+                apparent_tuple[axis] = c.random[axis] - lost;
                 // 掉超過 4 檔理論上不會發生，但推算允許指定 target_grow，
                 // 越界時寧可漏統計也不要 panic。
                 if (0..=MAX_LOST_PER_AXIS).contains(&lost) {
@@ -186,6 +216,7 @@ impl Distribution {
             if (0..TOTAL_LOST_SLOTS as i32).contains(&lost_sum) {
                 lost_total_marginal[lost_sum as usize] += p;
                 *combos.entry(lost_tuple).or_insert(0.0) += p;
+                *apparent.entry(apparent_tuple).or_insert(0.0) += p;
             }
         }
 
@@ -201,6 +232,22 @@ impl Distribution {
             .collect();
         lost_combos.sort_by_key(|c| c.total);
 
+        // 權重為零的列**整列不印** —— 原程式把它們搬到表尾、另外記一個「印幾列」
+        // 的數字，印的時候只走前面那幾列。這裡直接濾掉，效果相同。
+        //
+        // ⚠️ **排序是移植版自己挑的**（總掉檔遞增、同總掉檔照元組遞增，
+        // 跟 `lost_combos` 同一套）。原程式的列序是它那張表的建表順序，沒有逆出來。
+        let mut apparent_combos: Vec<ApparentCombo> = apparent
+            .into_iter()
+            .filter(|&(_, percent)| percent > 0.0)
+            .map(|(apparent, percent)| ApparentCombo {
+                apparent,
+                total: RANDOM_POOL - apparent.iter().sum::<i32>(),
+                percent,
+            })
+            .collect();
+        apparent_combos.sort_by_key(|c| c.total);
+
         let max_percent = percent.iter().copied().fold(0.0, f64::max);
         Self {
             percent,
@@ -210,6 +257,7 @@ impl Distribution {
             random_marginal,
             lost_total_marginal,
             lost_combos,
+            apparent_combos,
         }
     }
 
@@ -604,11 +652,77 @@ mod tests {
             }
         }
 
-        // 排序：總掉檔小的在前面（原程式的結果欄就是這個順序）
+        // 排序：總掉檔小的在前面
         assert!(
             d.lost_combos.windows(2).all(|w| w[0].total <= w[1].total),
             "掉檔組合沒有照總掉檔排序"
         );
+    }
+
+    /// ⭐ 表觀檔次組合 —— 原程式結果欄那幾列。
+    ///
+    /// 釘住兩件事：機率把全體分完（所以列與列加起來是 100%），
+    /// 以及列首那個「幾檔」與五個數字之間的恆等式
+    /// `Σapparent = RANDOM_POOL − total`（隨機檔總和恆為 10 推出來的）。
+    #[test]
+    fn apparent_combos_are_the_original_result_column() {
+        let (catalog, cands) = sample();
+        let d = Distribution::summarize(catalog, &cands);
+
+        let sum: f64 = d.apparent_combos.iter().map(|c| c.percent).sum();
+        assert!((sum - 100.0).abs() < 1e-9, "表觀檔次組合的機率總和不是 100：{sum}");
+
+        for c in &d.apparent_combos {
+            assert_eq!(
+                c.apparent.iter().sum::<i32>(),
+                RANDOM_POOL - c.total,
+                "{:?} 的五個數字加起來不等於 10 − 總掉檔 {}",
+                c.apparent,
+                c.total
+            );
+            assert!(c.percent > 0.0, "權重為零的列不該留下來");
+        }
+
+        // 總掉檔邊際 == 把表觀檔次組合按 total 收合（跟掉檔組合是同一份質量）
+        let mut folded = [0.0f64; TOTAL_LOST_SLOTS];
+        for c in &d.apparent_combos {
+            folded[c.total as usize] += c.percent;
+        }
+        for (i, (&a, &b)) in folded.iter().zip(&d.lost_total_marginal).enumerate() {
+            assert!((a - b).abs() < 1e-9, "第 {i} 格的總掉檔機率對不上：{a} vs {b}");
+        }
+
+        assert!(
+            d.apparent_combos.windows(2).all(|w| w[0].total <= w[1].total),
+            "表觀檔次組合沒有照總掉檔排序"
+        );
+    }
+
+    /// 表觀檔次比掉檔更細 —— 掉檔相同但隨機檔不同的兩筆會分成兩列。
+    ///
+    /// 沒有這個差別的話，這個欄位就只是 `lost_combos` 換個符號而已。
+    #[test]
+    fn the_apparent_tier_keeps_the_random_roll_that_the_loss_tuple_drops() {
+        let catalog = GrowRange::new(30, 25, 18, 20, 22, DEFAULT_BPRATE);
+        let grow = GrowRange::new(28, 25, 18, 20, 22, DEFAULT_BPRATE); // 體力掉 2
+        let mut a = fake_candidate(catalog, grow);
+        let mut b = fake_candidate(catalog, grow);
+        a.random = [10, 0, 0, 0, 0];
+        b.random = [0, 10, 0, 0, 0];
+        let d = Distribution::summarize(catalog, &[a, b]);
+
+        assert_eq!(d.lost_combos.len(), 1, "掉檔一樣，收成一列");
+        assert_eq!(
+            d.apparent_combos
+                .iter()
+                .map(|c| c.apparent)
+                .collect::<Vec<_>>(),
+            vec![[-2, 10, 0, 0, 0], [8, 0, 0, 0, 0]],
+            "隨機檔不同就是不同的表觀檔次"
+        );
+        for c in &d.apparent_combos {
+            assert_eq!(c.total, 2, "兩列的總掉檔都是 2");
+        }
     }
 
     #[test]

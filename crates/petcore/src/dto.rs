@@ -707,6 +707,10 @@ pub struct DistributionDto {
     /// **對全集統計，不受 `candidates` 那 200 筆上限影響。**
     /// 也**不能由 `lost_marginal` 推出來** —— 逐軸邊際沒有保留軸之間的搭配。
     pub lost_combos: Vec<LostComboDto>,
+    /// ⭐ **原程式主視窗「計算結果」欄印的就是這個** —— 一列一組**表觀檔次**。
+    ///
+    /// 同樣對全集統計，不受 `candidates` 那 200 筆上限影響。
+    pub apparent_combos: Vec<ApparentComboDto>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -716,6 +720,19 @@ pub struct LostComboDto {
     /// 這一組的總掉檔量。
     pub total: i32,
     /// 這一組的機率總和（百分點）。全部加起來是 100。
+    pub percent: f64,
+}
+
+/// 原程式結果欄的一列：`10檔  0 -4 1 2 1 11.52%`。
+#[derive(Debug, Clone, Serialize)]
+pub struct ApparentComboDto {
+    /// 逐軸的 `表觀檔次 − 圖鑑檔次`（＝ `隨機檔 − 掉檔`），可正可負。
+    ///
+    /// 原程式就是照這個數字原樣印，沒有換號。
+    pub apparent: [i32; AXES],
+    /// 這一列的總掉檔量，也就是列首那個「幾檔」。
+    pub total: i32,
+    /// 這一列的機率總和（百分點）。全部加起來是 100。
     pub percent: f64,
 }
 
@@ -736,6 +753,15 @@ impl From<&Distribution> for DistributionDto {
                 .iter()
                 .map(|c| LostComboDto {
                     lost: c.lost,
+                    total: c.total,
+                    percent: c.percent,
+                })
+                .collect(),
+            apparent_combos: d
+                .apparent_combos
+                .iter()
+                .map(|c| ApparentComboDto {
+                    apparent: c.apparent,
                     total: c.total,
                     percent: c.percent,
                 })

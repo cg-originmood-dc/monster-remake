@@ -321,10 +321,79 @@ fn the_guaranteed_loss_is_the_per_axis_minimum_over_every_candidate() {
     );
 }
 
+/// ⭐ **原程式結果欄那幾列**（表觀檔次）在真實資料上的三件事：
+///
+/// 1. 機率把全體分完 —— 截圖那三列 `11.52 + 39.90 + 48.58 = 100.00` 就是這件事
+/// 2. 列首的「幾檔」與五個數字之間的恆等式 `Σa = 10 − 總掉檔`
+/// 3. 收得比候選少很多 —— 一列不是一組候選解，是一組表觀檔次
+#[test]
+fn the_apparent_combos_match_the_original_result_column_on_real_data() {
+    for c in [
+        Case {
+            name: "小白鴨",
+            grow: [40, 45, 10, 20, 10],
+            lvl: 1,
+            stat: [118, 70, 47, 29, 30],
+        },
+        Case {
+            name: "衝浪小黃鴨",
+            grow: [28, 46, 23, 20, 8],
+            lvl: 1,
+            stat: [114, 77, 50, 40, 31],
+        },
+    ] {
+        let resp = run(&c);
+        let rows = resp["distribution"]["apparent_combos"]
+            .as_array()
+            .expect("沒有表觀檔次組合");
+
+        let sum: f64 = rows.iter().map(|r| r["percent"].as_f64().unwrap()).sum();
+        assert!(
+            (sum - 100.0).abs() < 1e-9,
+            "{}：表觀檔次組合的機率總和是 {sum}，不是 100",
+            c.name
+        );
+
+        let mut prev = i64::MIN;
+        for row in rows {
+            let a: Vec<i64> = row["apparent"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_i64().unwrap())
+                .collect();
+            let total = row["total"].as_i64().unwrap();
+            assert_eq!(
+                a.iter().sum::<i64>(),
+                10 - total,
+                "{}：{a:?} 加起來不等於 10 − 總掉檔 {total}",
+                c.name
+            );
+            assert!(total >= prev, "{}：沒有照總掉檔排序", c.name);
+            prev = total;
+            assert!(
+                row["percent"].as_f64().unwrap() > 0.0,
+                "{}：權重為零的列不該留下來",
+                c.name
+            );
+        }
+
+        // 一列不是一組候選解 —— 收不下來的話這個欄位就沒有存在的意義
+        let total_solutions = resp["total"].as_u64().unwrap();
+        assert!(
+            (rows.len() as u64) < total_solutions,
+            "{}：{} 組解只收成 {} 列，沒有收合到",
+            c.name,
+            total_solutions,
+            rows.len()
+        );
+    }
+}
+
 /// 掉檔組合表：機率總和 100，而且與逐軸邊際／總掉檔邊際三邊自洽。
 ///
-/// 這是使用者說原版「比較直觀」的那一塊 —— 原程式把候選收成幾列
-/// `13檔 … 28.45%`，加起來剛好 100%。
+/// ⚠️ **這張表是移植版自己的聚合**（鍵是掉檔 5 元組），原程式結果欄印的是
+/// 上面那個 `apparent_combos`。
 #[test]
 fn the_lost_combos_partition_the_probability_mass_on_real_data() {
     for c in [
